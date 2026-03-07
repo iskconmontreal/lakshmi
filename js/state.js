@@ -57,11 +57,12 @@ export const state = sprae(document.body, {
   categories:     ['All', 'Food', 'Books', 'Incense', 'Deities', 'Clothing', 'Donations', 'Other'],
 
   // Cart
-  cartItems:      [],
-  suggestedTotal: 0,
-  actualDonation: '',
-  manualOverride: false,
-  paymentMethod:  'Cash',
+  cartItems:        [],
+  suggestedTotal:   0,
+  actualDonation:   '',
+  donationReceived: 0,
+  manualOverride:   false,
+  paymentMethod:    'Cash',
 
   // UI
   isAdminMode:  false,
@@ -160,8 +161,9 @@ export const state = sprae(document.body, {
   },
 
   onActualInput(e) {
-    this.manualOverride = true;
-    this.actualDonation = e.target.value;
+    this.manualOverride   = true;
+    this.actualDonation   = e.target.value;
+    this.donationReceived = Math.max(0, (parseFloat(e.target.value) || 0) - this.suggestedTotal);
   },
 
   setPayment(method) {
@@ -188,6 +190,7 @@ export const state = sprae(document.body, {
         : '';
     }
     if (this.cartItems.length === 0) this.actualDonation = '';
+    this.donationReceived = Math.max(0, (parseFloat(this.actualDonation) || 0) - this.suggestedTotal);
   },
 
   _flashCard(name) {

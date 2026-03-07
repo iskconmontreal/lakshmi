@@ -118,14 +118,14 @@
 
         <div class="cart-footer">
           <div class="suggested-total-row">
-            <span class="label-suggested">SUGGESTED TOTAL</span>
+            <span class="label-suggested">ITEMS TOTAL</span>
             <span class="value-suggested" :text="fmt(suggestedTotal)">$0.00</span>
           </div>
 
           <div class="cart-divider"></div>
 
           <div class="actual-donation-block">
-            <label for="actual-donation" class="actual-label">ACTUAL DONATION RECEIVED</label>
+            <label for="actual-donation" class="actual-label">AMOUNT COLLECTED</label>
             <div class="actual-input-wrapper">
               <span class="currency-prefix">$</span>
               <input
@@ -140,6 +140,11 @@
                 :oninput="onActualInput"
               >
             </div>
+          </div>
+
+          <div class="suggested-total-row donation-received-row" :if="donationReceived > 0">
+            <span class="label-suggested">DONATION RECEIVED</span>
+            <span class="value-suggested value-donation" :text="fmt(donationReceived)">$0.00</span>
           </div>
 
           <div class="payment-method-block">
