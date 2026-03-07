@@ -479,7 +479,6 @@ body {
   border: none;
   color: var(--text-xlight);
   cursor: pointer;
-  font-size: 1.1rem;
   width: 26px;
   height: 26px;
   display: flex;
