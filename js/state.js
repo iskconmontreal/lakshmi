@@ -54,7 +54,7 @@ export const state = sprae(document.body, {
   catalogNotice:  '',
   searchQuery:    '',
   activeCategory: 'All',
-  categories:     ['All', 'Books', 'Incense', 'Deities', 'Clothing', 'Food', 'Donations', 'Other'],
+  categories:     ['All', 'Food', 'Books', 'Incense', 'Deities', 'Clothing', 'Donations', 'Other'],
 
   // Cart
   cartItems:      [],
