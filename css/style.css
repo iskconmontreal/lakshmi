@@ -553,15 +553,7 @@ body {
   margin: 10px 0;
 }
 
-.donation-received-row {
-  margin-top: 8px;
-  padding: 6px 10px;
-  background: var(--success-bg);
-  border: 1px solid var(--success-border);
-  border-radius: var(--radius-sm);
-}
-.donation-received-row .label-suggested { color: var(--success); }
-.value-donation { color: var(--success) !important; }
+.value-donation { color: var(--success); }
 
 /* Actual Donation */
 .actual-donation-block { margin-bottom: 12px; }
