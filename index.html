@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ISKCON Montreal Boutique</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ═══ HEADER ═══ -->
+  <header id="app-header">
+    <div class="header-inner">
+      <div class="header-brand">
+        <h1>ISKCON Montreal Boutique</h1>
+        <p class="header-subtitle">Hare Krishna &mdash; Donation-Based Store</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-outline-white" :onclick="() => loadCatalog(true)" title="Reload catalog from Google Sheet">
+          &#8635; Refresh Catalog
+        </button>
+        <button class="btn btn-saffron" :onclick="openReport">
+          &#128202; Daily Report
+        </button>
+        <button class="btn btn-ghost-white" :onclick="toggleAdmin" :text="isAdminMode ? '← Back to POS' : 'Admin'">
+          Admin
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══ MAIN ═══ -->
+  <main id="app-main">
+
+    <!-- ── CASHIER MODE ── -->
+    <div id="cashier-mode" class="cashier-layout" :if="!isAdminMode">
+
+      <!-- Catalog Section -->
+      <section id="catalog-section" class="catalog-section">
+
+        <div class="catalog-notice" :if="catalogNotice" :text="catalogNotice"></div>
+
+        <!-- Search + Category Filters -->
+        <div class="catalog-controls">
+          <input type="search" class="search-input" placeholder="&#128269; Search items..."
+                 :oninput="onSearch">
+          <div class="category-filters">
+            <button :each="cat in categories"
+                    class="filter-btn"
+                    :class="{active: cat === activeCategory}"
+                    :text="cat"
+                    :onclick="() => setCategory(cat)">
+            </button>
+          </div>
+        </div>
+
+        <!-- Product Grid -->
+        <div id="catalog-grid" class="catalog-grid">
+          <div class="grid-status" :if="catalogLoading">Loading catalog&hellip;</div>
+          <div class="grid-status" :if="!catalogLoading && catalogItems.length === 0">No items found.</div>
+          <div :each="item in catalogItems"
+               class="product-card"
+               :data-name="item.name"
+               role="button"
+               tabindex="0"
+               :aria-label="'Add ' + item.name + ' to cart'"
+               :onclick="() => addToCart(item)"
+               :onkeydown="e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); addToCart(item); } }">
+            <div class="product-img-wrap">
+              <img class="product-img"
+                   :src="item.imageURL || ''"
+                   :alt="item.name"
+                   loading="lazy"
+                   :style="{display: item.imageURL ? '' : 'none'}"
+                   :onerror="e => { e.target.style.display='none'; e.target.nextElementSibling.style.display=''; }">
+              <span class="product-img-fallback"
+                    :style="{display: item.imageURL ? 'none' : ''}">&#128591;</span>
+            </div>
+            <div class="product-body">
+              <div class="product-name"     :text="item.name"></div>
+              <div class="product-donation" :text="item.suggestedDonation > 0 ? 'Suggested: ' + fmt(item.suggestedDonation) : 'Any donation welcome'"></div>
+              <div class="product-category" :text="item.category"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Cart Panel -->
+      <aside id="cart-panel" class="cart-panel">
+        <div class="cart-header">
+          <h2 class="cart-title">Cart</h2>
+          <button class="btn-clear-cart" title="Clear all items" :onclick="clearCart">Clear Cart</button>
+        </div>
+
+        <div id="cart-items" class="cart-items">
+          <p class="cart-empty-msg" :if="cartItems.length === 0">Cart is empty &mdash; tap an item to add it</p>
+          <div :each="item in cartItems" class="cart-item">
+            <div class="ci-name" :text="item.name"></div>
+            <div class="ci-price" :class="{'ci-price--discounted': item.donation < item.suggestedDonation}">
+              <span class="ci-price-symbol">$</span>
+              <input class="ci-price-input"
+                     type="number" min="0" step="0.01"
+                     :value="(item.donation ?? item.suggestedDonation).toFixed(2)"
+                     :title="'Suggested: ' + fmt(item.suggestedDonation)"
+                     :onchange="e => updateItemDonation(item.name, e.target.value)">
+            </div>
+            <div class="ci-controls">
+              <button class="qty-btn" :onclick="() => decQty(item.name)" aria-label="Decrease quantity">&minus;</button>
+              <span   class="qty-num" :text="item.qty"></span>
+              <button class="qty-btn" :onclick="() => incQty(item.name)" aria-label="Increase quantity">+</button>
+            </div>
+            <button class="ci-remove" :onclick="() => removeFromCart(item.name)" aria-label="Remove item">&times;</button>
+          </div>
+        </div>
+
+        <div class="cart-footer">
+          <div class="suggested-total-row">
+            <span class="label-suggested">SUGGESTED TOTAL</span>
+            <span class="value-suggested" :text="fmt(suggestedTotal)">$0.00</span>
+          </div>
+
+          <div class="cart-divider"></div>
+
+          <div class="actual-donation-block">
+            <label for="actual-donation" class="actual-label">ACTUAL DONATION RECEIVED</label>
+            <div class="actual-input-wrapper">
+              <span class="currency-prefix">$</span>
+              <input
+                type="number"
+                id="actual-donation"
+                class="actual-input"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                autocomplete="off"
+                :value="actualDonation"
+                :oninput="onActualInput"
+              >
+            </div>
+          </div>
+
+          <div class="payment-method-block">
+            <span class="payment-label">PAYMENT METHOD</span>
+            <div class="payment-toggle">
+              <button class="payment-btn" :class="{active: paymentMethod === 'Cash'}" :onclick="() => setPayment('Cash')">&#128181; Cash</button>
+              <button class="payment-btn" :class="{active: paymentMethod === 'Card'}" :onclick="() => setPayment('Card')">&#128179; Card</button>
+            </div>
+          </div>
+
+          <button class="btn-complete-sale" :onclick="completeSale">
+            COMPLETE SALE
+          </button>
+        </div>
+      </aside>
+    </div>
+
+    <!-- ── ADMIN MODE ── -->
+    <div id="admin-mode" class="admin-mode" :if="isAdminMode">
+      <div class="admin-panel">
+        <h2 class="admin-title">Admin Panel</h2>
+
+        <!-- Sheet Config -->
+        <div class="admin-card">
+          <h3>Google Sheet Configuration</h3>
+          <p class="admin-hint">Paste the CSV export URL of your published Google Sheet:</p>
+          <input type="url" class="admin-url-input" placeholder="https://docs.google.com/spreadsheets/d/..."
+                 :value="sheetUrl" :oninput="e => sheetUrl = e.target.value">
+          <div class="admin-row">
+            <button class="btn btn-saffron"     :onclick="saveSheetUrl">Save URL</button>
+            <button class="btn btn-outline-dark" :onclick="testConnection">Test Connection</button>
+          </div>
+          <div :class="connClass" :if="connStatus" :text="connStatus"></div>
+          <a :if="sheetUrl" :href="sheetUrl" target="_blank" rel="noopener" class="sheet-link">&#8599; Open Google Sheet</a>
+        </div>
+
+        <!-- How-to -->
+        <div class="admin-card">
+          <h3>How to Set Up Your Catalog</h3>
+          <ol class="admin-steps">
+            <li>Create a Google Sheet with exactly these column headers:<br>
+              <code>Name, Category, SuggestedDonation, ImageURL, Description</code>
+            </li>
+            <li>Add your items as rows (one item per row)</li>
+            <li>Go to <strong>File &rarr; Share &rarr; Publish to web</strong></li>
+            <li>Under <em>Link</em>, choose the sheet tab and select <strong>Comma-separated values (.csv)</strong></li>
+            <li>Click <strong>Publish</strong> and copy the URL</li>
+            <li>Paste the URL above and click <strong>Save URL</strong></li>
+            <li>Click <strong>Refresh Catalog</strong> in the header</li>
+          </ol>
+        </div>
+
+        <!-- Past Reports -->
+        <div class="admin-card">
+          <h3>Past Reports (Last 7 Days)</h3>
+          <p :if="pastReports.length === 0" style="color:var(--text-xlight);font-size:0.85rem">No sales history yet.</p>
+          <div :each="r in pastReports" class="past-report-row">
+            <div>
+              <div class="past-report-date" :text="r.dateLabel"></div>
+              <div class="past-report-meta" :text="r.meta"></div>
+            </div>
+            <div :class="r.diffClass" :text="r.diff"></div>
+          </div>
+        </div>
+
+        <!-- Danger Zone -->
+        <div class="admin-card admin-danger-card">
+          <h3>Danger Zone</h3>
+          <button class="btn btn-danger" :onclick="clearAllData">Clear All Local Data</button>
+          <p class="danger-note">Erases all sales history and the cached catalog. Cannot be undone.</p>
+        </div>
+      </div>
+    </div>
+
+  </main><!-- #app-main -->
+
+  <!-- ═══ DAILY REPORT MODAL ═══ -->
+  <div class="modal" :if="reportOpen" role="dialog" aria-modal="true" aria-label="Daily Report">
+    <div class="modal-backdrop" :onclick="closeReport"></div>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Daily Sales Report</h2>
+        <button class="btn-icon-close" aria-label="Close" :onclick="closeReport">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="report-date-label"  :text="reportDateLabel"></p>
+        <p class="report-tx-count"    :text="reportTxCount"></p>
+
+        <div :if="reportHasItems">
+          <p class="report-section-title">Items Distributed</p>
+          <table class="report-table">
+            <thead>
+              <tr><th>Item</th><th style="text-align:center">Qty</th><th>Suggested</th></tr>
+            </thead>
+            <tbody>
+              <tr :each="item in reportItems">
+                <td :text="item.name"></td>
+                <td :text="item.qty"></td>
+                <td :text="item.suggestedFmt"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="report-empty" :if="!reportHasItems">No sales recorded today yet.</p>
+
+        <div class="report-summary-box">
+          <div class="summary-row">
+            <span>Suggested Total</span>
+            <span :text="reportSuggested"></span>
+          </div>
+          <div class="summary-row main">
+            <span>Actual Donations Received</span>
+            <span :text="reportActual"></span>
+          </div>
+          <div :class="reportDiffClass">
+            <span :text="reportDiffLabel"></span>
+            <span :text="reportDiff"></span>
+          </div>
+          <p class="summary-percentage" :if="reportPctText" :text="reportPctText"></p>
+        </div>
+
+        <div :if="reportHasPayRows">
+          <p class="report-section-title" style="margin-top:16px">Payment Breakdown</p>
+          <div class="report-summary-box">
+            <div :each="row in reportPayRows" class="summary-row payment-row">
+              <span :text="row.label"></span>
+              <span :text="row.total"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-saffron"   :onclick="printReport">&#128424; Print Report</button>
+        <button class="btn btn-danger"    :onclick="clearToday">Clear Today&rsquo;s Sales</button>
+        <button class="btn btn-ghost-dark" :onclick="closeReport">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ WARNING DIALOG ═══ -->
+  <div class="warning-overlay" :if="warnOpen">
+    <div class="warning-box">
+      <h3 :text="warnTitle"></h3>
+      <p  :text="warnMessage"></p>
+      <div class="warning-actions">
+        <button class="btn btn-ghost-dark" :onclick="warnCancel">Cancel</button>
+        <button class="btn btn-saffron"    :onclick="warnConfirm">Yes, Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ TOAST ═══ -->
+  <div class="toast" :class="{hidden: !toastVisible}" role="status">
+    <span class="toast-icon">&#128591;</span>
+    <div class="toast-text">
+      <strong>Thank you! Hare Krishna</strong>
+      <span :text="toastText"></span>
+    </div>
+  </div>
+
+  <!-- ═══ PRINT AREA (hidden except when printing) ═══ -->
+  <div id="print-area"></div>
+
+  <!-- ═══ SCRIPTS ═══ -->
+  <script type="module" src="js/app.js"></script>
+
+</body>
+</html>
