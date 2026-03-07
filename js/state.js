@@ -239,27 +239,32 @@ export const state = sprae(document.body, {
   // ── Report ─────────────────────────────────────────────────────
 
   openReport() {
-    const txs  = Sales.getToday();
-    const s    = Sales.buildSummary(txs);
-    const key  = Sales._todayKey();
+    this.reportOpen = false; // force Sprae to see false→true transition
+    try {
+      const txs  = Sales.getToday();
+      const s    = Sales.buildSummary(txs);
+      const key  = Sales._todayKey();
 
-    this.reportDateLabel  = fmtDate(key);
-    this.reportTxCount    = s.count + ' Transaction' + (s.count !== 1 ? 's' : '');
-    this.reportItems      = s.items.map(i => ({ ...i, suggestedFmt: fmt(i.suggested) }));
-    this.reportHasItems   = s.items.length > 0;
-    this.reportSuggested  = fmt(s.suggestedTotal);
-    this.reportActual     = fmt(s.actualTotal);
-    this.reportDiffLabel  = s.difference >= 0 ? 'Extra Received' : 'Below Suggested';
-    this.reportDiffClass  = 'summary-row ' + (s.difference > 0 ? 'diff-positive' : s.difference < 0 ? 'diff-negative' : 'diff-zero');
-    this.reportDiff       = (s.difference > 0 ? '+' : '') + fmt(s.difference);
-    this.reportPctText    = s.percentage !== null
-      ? `Devotees gave ${Math.abs(s.percentage)}% ${s.difference >= 0 ? 'above' : 'below'} the suggested total`
-      : '';
-    this.reportPayRows    = Object.entries(s.byPayment)
-      .filter(([, p]) => p.count > 0)
-      .map(([method, p]) => ({ label: `${method} (${p.count} tx)`, total: fmt(p.total) }));
-    this.reportHasPayRows = this.reportPayRows.length > 0;
-    this.reportOpen       = true;
+      this.reportDateLabel  = fmtDate(key);
+      this.reportTxCount    = s.count + ' Transaction' + (s.count !== 1 ? 's' : '');
+      this.reportItems      = s.items.map(i => ({ ...i, suggestedFmt: fmt(i.suggested) }));
+      this.reportHasItems   = s.items.length > 0;
+      this.reportSuggested  = fmt(s.suggestedTotal);
+      this.reportActual     = fmt(s.actualTotal);
+      this.reportDiffLabel  = s.difference >= 0 ? 'Extra Received' : 'Below Suggested';
+      this.reportDiffClass  = 'summary-row ' + (s.difference > 0 ? 'diff-positive' : s.difference < 0 ? 'diff-negative' : 'diff-zero');
+      this.reportDiff       = (s.difference > 0 ? '+' : '') + fmt(s.difference);
+      this.reportPctText    = s.percentage !== null
+        ? `Devotees gave ${Math.abs(s.percentage)}% ${s.difference >= 0 ? 'above' : 'below'} the suggested total`
+        : '';
+      this.reportPayRows    = Object.entries(s.byPayment)
+        .filter(([, p]) => p.count > 0)
+        .map(([method, p]) => ({ label: `${method} (${p.count} tx)`, total: fmt(p.total) }));
+      this.reportHasPayRows = this.reportPayRows.length > 0;
+    } catch (err) {
+      console.error('[Report] Failed to build report:', err);
+    }
+    this.reportOpen = true;
   },
 
   closeReport() {
