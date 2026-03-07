@@ -488,7 +488,8 @@ body {
   border-radius: 4px;
   transition: all var(--transition);
 }
-.ci-remove:hover { color: var(--danger); background: var(--danger-bg); }
+.ci-remove { color: var(--danger) !important; }
+.ci-remove:hover { background: var(--danger-bg); }
 
 .qty-btn {
   width: 26px;
