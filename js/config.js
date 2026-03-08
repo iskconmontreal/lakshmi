@@ -21,7 +21,12 @@ export const CONFIG = {
     CATALOG_CACHE: 'iskcon_catalog_cache',
     SALES:         'iskcon_sales',
     CONFIG:        'iskcon_config',
+    SYNC_CURSOR:   'iskcon_sync_cursor',
   },
+
+  // ── Goloka backend (set via Admin panel) ──────────────────────
+  GOLOKA_URL:        'http://localhost:8080', //'https://api.iskconmontreal.ca',
+  BOUTIQUE_WRITE_KEY: '',  // set once via Admin panel, stored in localStorage
 };
 
 // ──────────────────────────────────────────────────────────────────

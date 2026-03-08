@@ -4,9 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ISKCON Montreal Boutique</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/tokens.css">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -21,6 +19,9 @@
       <div class="header-actions">
         <button class="btn btn-outline-white" :onclick="() => loadCatalog(true)" title="Reload catalog from Google Sheet">
           &#8635; Refresh Catalog
+        </button>
+        <button class="btn btn-outline-white" :onclick="openDatabase">
+          &#128451; Database
         </button>
         <button class="btn btn-saffron" :onclick="openReport">
           &#128202; Daily Report
@@ -46,7 +47,7 @@
         <!-- Search + Category Filters -->
         <div class="catalog-controls">
           <input type="search" class="search-input" placeholder="&#128269; Search items..."
-                 :oninput="onSearch">
+                 :oninput="onSearch" :onsearch="onSearch">
           <div class="category-filters">
             <button :each="cat in categories"
                     class="filter-btn"
@@ -130,7 +131,7 @@
             <span class="value-suggested" :text="fmt(suggestedTotal)">$0.00</span>
           </div>
 
-          <div class="suggested-total-row" :if="donationReceived > 0">
+          <div class="suggested-total-row">
             <span class="label-suggested">DONATION RECEIVED</span>
             <span class="value-suggested value-donation" :text="fmt(donationReceived)">$0.00</span>
           </div>
@@ -189,6 +190,20 @@
           <a :if="sheetUrl" :href="sheetUrl" target="_blank" rel="noopener" class="sheet-link">&#8599; Open Google Sheet</a>
         </div>
 
+        <!-- Boutique Database Config -->
+        <div class="admin-card">
+          <h3>Boutique Database</h3>
+          <p class="admin-hint">Enter the write key to sync sales to the backend database. Ask your administrator for this key.</p>
+          <label class="admin-label">Boutique Write Key</label>
+          <input type="password" class="admin-url-input" placeholder="Write key from server"
+                 :value="boutiqueKey" :oninput="e => boutiqueKey = e.target.value">
+          <div class="admin-row">
+            <button class="btn btn-saffron"     :onclick="saveBoutiqueKey">Save</button>
+            <button class="btn btn-outline-dark" :onclick="testBoutiqueConnection">Test Connection</button>
+          </div>
+          <div :class="boutiqueClass" :if="boutiqueStatus" :text="boutiqueStatus"></div>
+        </div>
+
         <!-- How-to -->
         <div class="admin-card">
           <h3>How to Set Up Your Catalog</h3>
@@ -223,6 +238,8 @@
           <h3>Danger Zone</h3>
           <button class="btn btn-danger" :onclick="clearAllData">Clear All Local Data</button>
           <p class="danger-note">Erases all sales history and the cached catalog. Cannot be undone.</p>
+          <button class="btn btn-danger" style="margin-top:8px" :onclick="clearBackendData">Clear Backend Database</button>
+          <p class="danger-note">Permanently deletes all sales from the Goloka database. For testing only.</p>
         </div>
       </div>
     </div>
@@ -241,37 +258,41 @@
         <p class="report-date-label"  :text="reportDateLabel"></p>
         <p class="report-tx-count"    :text="reportTxCount"></p>
 
-        <div :if="reportHasItems">
-          <p class="report-section-title">Items Distributed</p>
-          <table class="report-table">
-            <thead>
-              <tr><th>Item</th><th style="text-align:center">Qty</th><th>Suggested</th></tr>
-            </thead>
-            <tbody>
-              <tr :each="item in reportItems">
-                <td :text="item.name"></td>
-                <td :text="item.qty"></td>
-                <td :text="item.suggestedFmt"></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="report-empty" :if="!reportHasItems">No sales recorded today yet.</p>
+        <p class="report-empty" :if="reportTxList.length === 0">No sales recorded today yet.</p>
 
-        <div class="report-summary-box">
-          <div class="summary-row">
-            <span>Suggested Total</span>
-            <span :text="reportSuggested"></span>
+        <div :if="reportTxList.length > 0">
+          <div :each="tx in reportTxList" class="report-tx">
+            <div class="report-tx-meta">
+              <span class="report-tx-icon" :text="tx.methodIcon"></span>
+              <span class="report-tx-method" :text="tx.method"></span>
+              <span class="report-tx-time" :text="tx.time"></span>
+              <span class="report-tx-collected" :text="tx.collected"></span>
+            </div>
+            <div :each="item in tx.items" class="report-tx-item">
+              <span><span :text="item.icon"></span>&nbsp;<span :text="item.name + ' \xd7' + item.qty"></span></span>
+              <span :text="item.price"></span>
+            </div>
+            <div class="report-tx-donation" :if="tx.donation">
+              <span>Donation</span>
+              <span :text="tx.donation"></span>
+            </div>
           </div>
-          <div class="summary-row main">
-            <span>Actual Donations Received</span>
-            <span :text="reportActual"></span>
+        </div>
+
+        <div class="report-summary-box" style="margin-top:16px">
+          <div class="summary-row">
+            <span>Item Total</span>
+            <span :text="reportSuggested"></span>
           </div>
           <div :class="reportDiffClass">
             <span :text="reportDiffLabel"></span>
             <span :text="reportDiff"></span>
           </div>
           <p class="summary-percentage" :if="reportPctText" :text="reportPctText"></p>
+          <div class="summary-row main">
+            <span>Total Collected</span>
+            <span :text="reportActual"></span>
+          </div>
         </div>
 
         <div :if="reportHasPayRows">
@@ -286,8 +307,65 @@
       </div>
       <div class="modal-foot">
         <button class="btn btn-saffron"   :onclick="printReport">&#128424; Print Report</button>
+        <button class="btn btn-saffron"   :onclick="recordSales"
+                :disabled="syncStatus === 'syncing'">&#128190; Record Sales</button>
+        <span class="sync-status" :class="'sync-status--' + syncStatus"
+              :if="syncMsg" :text="syncMsg"></span>
         <button class="btn btn-danger"    :onclick="clearToday">Clear Today&rsquo;s Sales</button>
         <button class="btn btn-ghost-dark" :onclick="closeReport">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ TRANSACTION HISTORY MODAL ═══ -->
+  <div class="modal" :if="dbOpen" role="dialog" aria-modal="true" aria-label="Transaction History">
+    <div class="modal-backdrop" :onclick="closeDatabase"></div>
+    <div class="modal-box modal-box--wide">
+      <div class="modal-head">
+        <h2>Database Records</h2>
+        <button class="btn-icon-close" aria-label="Close" :onclick="closeDatabase">&times;</button>
+      </div>
+      <div class="modal-body db-body">
+        <div class="db-loading" :if="dbStatus === 'loading'">&#8987; Loading from database&hellip;</div>
+        <div class="db-error"   :if="dbStatus === 'error'">Could not load from database &mdash; showing local data instead.</div>
+        <p class="db-empty" :if="dbStatus !== 'loading' && dbDays.length === 0">No transactions recorded yet.</p>
+        <div :each="day in dbDays" class="db-day">
+          <div class="db-day-header">
+            <div class="db-day-info">
+              <span class="db-day-label" :text="day.dateLabel"></span>
+              <span class="db-day-summary">
+                <span class="db-day-total-inline" :text="day.dayTotal"></span>
+                <span class="db-day-donation-inline" :if="day.dayDonation" :text="day.dayDonation"></span>
+              </span>
+            </div>
+            <span class="db-day-count" :text="day.txCount"></span>
+          </div>
+          <div :each="tx in day.transactions" class="db-tx">
+            <div class="db-tx-meta">
+              <span class="db-tx-time"   :text="tx.time"></span>
+              <span class="db-tx-method" :text="tx.method"></span>
+            </div>
+            <div :each="item in tx.items" class="db-tx-item">
+              <span class="db-item-name">
+                <span :text="item.name + ' \xd7' + item.qty"></span>
+                <span class="db-item-cat" :text="item.category"></span>
+              </span>
+              <span class="db-item-amt" :text="item.price"></span>
+            </div>
+            <div class="db-tx-collected">
+              <span>Collected</span>
+              <span :text="tx.collected"></span>
+            </div>
+            <div class="db-tx-donation" :if="tx.donation">
+              <span>Donation</span>
+              <span :text="tx.donation"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-saffron" :onclick="printDatabase">&#128424; Print Report</button>
+        <button class="btn btn-ghost-dark" :onclick="closeDatabase">Close</button>
       </div>
     </div>
   </div>

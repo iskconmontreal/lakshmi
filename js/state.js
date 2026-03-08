@@ -8,6 +8,7 @@ import { CONFIG, SAMPLE_CATALOG } from './config.js';
 import { Catalog } from './catalog.js';
 import { Cart } from './cart.js';
 import { Sales } from './sales.js';
+import { DB } from './db.js';
 
 // ── Module-level non-reactive state ───────────────────────────────
 let _pendingConfirm = null;
@@ -41,7 +42,8 @@ function loadStoredConfig() {
 function applyStoredConfig() {
   try {
     const saved = loadStoredConfig();
-    if (saved.sheetUrl) CONFIG.GOOGLE_SHEET_CSV_URL = saved.sheetUrl;
+    if (saved.sheetUrl)    CONFIG.GOOGLE_SHEET_CSV_URL = saved.sheetUrl;
+    if (saved.boutiqueKey) CONFIG.BOUTIQUE_WRITE_KEY   = saved.boutiqueKey;
   } catch (_) {}
 }
 
@@ -88,12 +90,25 @@ export const state = sprae(document.body, {
   reportPctText:    '',
   reportPayRows:    [],
   reportHasPayRows: false,
+  reportTxList:     [],
+
+  // Transaction history
+  dbOpen:   false,
+  dbDays:   [],
+  dbStatus: '', // '' | 'loading' | 'error'
+
+  // GitHub sync
+  syncStatus: '', // '' | 'syncing' | 'ok' | 'error'
+  syncMsg:    '',
 
   // Admin
-  sheetUrl:    '',
-  connStatus:  '',
-  connClass:   'conn-status',
-  pastReports: [],
+  sheetUrl:       '',
+  connStatus:     '',
+  connClass:      'conn-status',
+  pastReports:    [],
+  boutiqueKey:    '',
+  boutiqueStatus: '',
+  boutiqueClass:  'conn-status',
 
   // Helper exposed to templates
   fmt,
@@ -125,7 +140,12 @@ export const state = sprae(document.body, {
 
   setCategory(cat) {
     this.activeCategory = cat;
-    this.catalogItems   = Catalog.filter(this.searchQuery, this.activeCategory);
+    if (cat === 'All') {
+      this.searchQuery = '';
+      const input = document.querySelector('.search-input');
+      if (input) input.value = '';
+    }
+    this.catalogItems = Catalog.filter(this.searchQuery, this.activeCategory);
   },
 
   // ── Cart ───────────────────────────────────────────────────────
@@ -238,8 +258,15 @@ export const state = sprae(document.body, {
 
   // ── Report ─────────────────────────────────────────────────────
 
+  _categoryIcon(cat) {
+    if (cat === 'Book')       return '📚';
+    if (cat === 'Restaurant') return '🍽️';
+    return '🛍️';
+  },
+
+  _methodIcon(m) { return m === 'Card' ? '💳' : '💵'; },
+
   openReport() {
-    this.reportOpen = false; // force Sprae to see false→true transition
     try {
       const txs  = Sales.getToday();
       const s    = Sales.buildSummary(txs);
@@ -247,7 +274,7 @@ export const state = sprae(document.body, {
 
       this.reportDateLabel  = fmtDate(key);
       this.reportTxCount    = s.count + ' Transaction' + (s.count !== 1 ? 's' : '');
-      this.reportItems      = s.items.map(i => ({ ...i, suggestedFmt: fmt(i.suggested) }));
+      this.reportItems      = s.items.map(i => ({ ...i, suggestedFmt: fmt(i.suggested), icon: this._categoryIcon(i.category) }));
       this.reportHasItems   = s.items.length > 0;
       this.reportSuggested  = fmt(s.suggestedTotal);
       this.reportActual     = fmt(s.actualTotal);
@@ -261,6 +288,24 @@ export const state = sprae(document.body, {
         .filter(([, p]) => p.count > 0)
         .map(([method, p]) => ({ label: `${method} (${p.count} tx)`, total: fmt(p.total) }));
       this.reportHasPayRows = this.reportPayRows.length > 0;
+      this.reportTxList = txs
+        .slice()
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+        .map(tx => ({
+          time:       new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }),
+          methodIcon: this._methodIcon(tx.paymentMethod || 'Cash'),
+          method:     tx.paymentMethod || 'Cash',
+          collected:  fmt(tx.actualDonation),
+          items: tx.items.map(i => ({
+            name:  i.name,
+            qty:   i.qty,
+            price: fmt(i.suggestedDonation * i.qty),
+            icon:  this._categoryIcon(i.category || 'Boutique'),
+          })),
+          donation: (tx.actualDonation - tx.suggestedTotal) > 0.005
+            ? '+' + fmt(tx.actualDonation - tx.suggestedTotal)
+            : null,
+        }));
     } catch (err) {
       console.error('[Report] Failed to build report:', err);
     }
@@ -271,18 +316,141 @@ export const state = sprae(document.body, {
     this.reportOpen = false;
   },
 
+  // ── Transaction History ────────────────────────────────────────
+
+  async openDatabase() {
+    this.dbOpen   = false;
+    this.dbStatus = 'loading';
+    this.dbDays   = [];
+    this.dbOpen   = true; // open modal immediately so user sees loading state
+
+    if (DB.isConfigured()) {
+      try {
+        this.dbDays   = await DB.allSales();
+        this.dbStatus = '';
+        return;
+      } catch (err) {
+        console.warn('[DB] allSales failed, falling back to localStorage:', err.message);
+        this.dbStatus = 'error';
+      }
+    }
+
+    // Fallback: read from localStorage
+    this.dbStatus = '';
+    this.dbDays   = this._buildDbDaysFromLocalStorage();
+  },
+
+  _buildDbDaysFromLocalStorage() {
+    const all  = Sales._loadAll();
+    const days = {};
+    all.forEach(tx => {
+      const day = tx.timestamp.slice(0, 10);
+      if (!days[day]) days[day] = [];
+      days[day].push(tx);
+    });
+    return Object.entries(days)
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([date, txs]) => {
+        const totalCollected = txs.reduce((s, t) => s + (t.actualDonation || 0), 0);
+        const totalDonation  = txs.reduce((s, t) => s + Math.max(0, (t.actualDonation || 0) - (t.suggestedTotal || 0)), 0);
+        return {
+          dateLabel:   fmtDate(date),
+          txCount:     txs.length + ' transaction' + (txs.length !== 1 ? 's' : ''),
+          dayTotal:    fmt(totalCollected),
+          dayDonation: totalDonation > 0.005 ? '+' + fmt(totalDonation) : null,
+          transactions: txs
+            .slice()
+            .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+            .map(tx => {
+              const donation = (tx.actualDonation || 0) - (tx.suggestedTotal || 0);
+              return {
+                time:      new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }),
+                method:    tx.paymentMethod || 'Cash',
+                collected: fmt(tx.actualDonation),
+                donation:  donation > 0.005 ? '+' + fmt(donation) : null,
+                items:     tx.items.map(i => ({
+                  name:     i.name,
+                  qty:      i.qty,
+                  price:    fmt(i.suggestedDonation * i.qty),
+                  category: i.category || 'Boutique',
+                })),
+              };
+            }),
+        };
+      });
+  },
+
+  closeDatabase() {
+    this.dbOpen     = false;
+    this.syncStatus = '';
+    this.syncMsg    = '';
+  },
+
+  async recordSales() {
+    if (!DB.isConfigured()) {
+      this.syncStatus = 'error';
+      this.syncMsg    = 'Configure Boutique Write Key in Admin first.';
+      return;
+    }
+    this.syncStatus = 'syncing';
+    this.syncMsg    = '';
+    try {
+      const cursor = localStorage.getItem(CONFIG.STORAGE_KEYS.SYNC_CURSOR) || '';
+      const newTxs = Sales._loadAll()
+        .filter(tx => tx.timestamp > cursor)
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+      const result = await DB.appendNew(newTxs);
+      if (result.count === 0) {
+        this.syncStatus = 'ok';
+        this.syncMsg    = '✓ Already up to date — nothing new to record.';
+        return;
+      }
+      localStorage.setItem(CONFIG.STORAGE_KEYS.SYNC_CURSOR, result.cursor);
+      this.syncStatus = 'ok';
+      this.syncMsg    = `✓ ${result.count} transaction${result.count !== 1 ? 's' : ''} recorded to database.`;
+    } catch (err) {
+      this.syncStatus = 'error';
+      this.syncMsg    = `✗ Failed: ${err.message}`;
+    }
+  },
+
   printReport() {
     const txs  = Sales.getToday();
     const s    = Sales.buildSummary(txs);
 
+    function printCat(cat) {
+      if (cat === 'Book')       return '[Book]';
+      if (cat === 'Restaurant') return '[Rest]';
+      return '[Shop]';
+    }
+
     const itemLines = s.items.length > 0
       ? s.items.map(i => {
-          const name = i.name.slice(0, 32).padEnd(32);
+          const name = i.name.slice(0, 28).padEnd(28);
           const qty  = String(i.qty).padStart(5);
           const amt  = fmt(i.suggested).padStart(10);
-          return `${name}  ${qty}   ${amt}`;
+          const cat  = printCat(i.category).padStart(7);
+          return `${name}  ${qty}   ${amt}  ${cat}`;
         }).join('\n')
       : '  (no items)';
+
+    const txLines = txs.length > 0
+      ? txs
+          .slice()
+          .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+          .map(tx => {
+            const time   = new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' });
+            const method = (tx.paymentMethod || 'Cash').toUpperCase();
+            const items  = tx.items.map(i => {
+              const name = ('  ' + i.name + ' \xd7' + i.qty).slice(0, 36).padEnd(36);
+              const amt  = fmt(i.suggestedDonation * i.qty).padStart(8);
+              const cat  = printCat(i.category || 'Boutique').padStart(7);
+              return `${name}  ${amt}  ${cat}`;
+            }).join('\n');
+            const collected = `  ${'Collected:'.padEnd(36)}  ${fmt(tx.actualDonation).padStart(8)}`;
+            return `[${method}]  ${time}\n${items}\n${collected}`;
+          }).join('\n\n')
+      : '  (no transactions)';
 
     const diffSign  = s.difference > 0 ? '+' : '';
     const diffLabel = s.difference >= 0 ? 'Extra Received  ' : 'Below Suggested ';
@@ -301,19 +469,66 @@ Transactions: ${s.count}
 
 ITEMS DISTRIBUTED:
 ${'─'.repeat(55)}
-${'Item'.padEnd(32)}    Qty   Suggested
+${'Item'.padEnd(28)}    Qty      Price    Cat.
 ${'─'.repeat(55)}
 ${itemLines}
 ${'─'.repeat(55)}
 
+TRANSACTIONS:
+${'─'.repeat(55)}
+${txLines}
+
+${'─'.repeat(55)}
+
 SUMMARY:
-  Suggested Total:    ${fmt(s.suggestedTotal).padStart(12)}
-  Actual Donations:   ${fmt(s.actualTotal).padStart(12)}
+  Item Total:         ${fmt(s.suggestedTotal).padStart(12)}
+  Total Collected:    ${fmt(s.actualTotal).padStart(12)}
   ${diffLabel}  ${(diffSign + fmt(s.difference)).padStart(12)}  ${pctLine}
 
 PAYMENT BREAKDOWN:
 ${'─'.repeat(55)}
 ${payLines || '  (no transactions)'}
+
+${'═'.repeat(55)}
+              Hare Krishna
+${'═'.repeat(55)}`;
+
+    document.getElementById('print-area').innerHTML =
+      `<div class="print-report"><pre>${esc(report)}</pre></div>`;
+    window.print();
+  },
+
+  printDatabase() {
+    function printCat(cat) {
+      if (cat === 'Book')       return '[Book]';
+      if (cat === 'Restaurant') return '[Rest]';
+      return '[Shop]';
+    }
+
+    const dayBlocks = this.dbDays.map(day => {
+      const txLines = day.transactions.map(tx => {
+        const method = tx.method.toUpperCase();
+        const items  = tx.items.map(i => {
+          const name = ('  ' + i.name + ' \xd7' + i.qty).slice(0, 36).padEnd(36);
+          const amt  = i.price.padStart(8);
+          const cat  = printCat(i.category).padStart(7);
+          return `${name}  ${amt}  ${cat}`;
+        }).join('\n');
+        const collected = `  ${'Collected:'.padEnd(36)}  ${tx.collected.padStart(8)}`;
+        const donation  = tx.donation ? `\n  ${'Donation:'.padEnd(36)}  ${tx.donation.padStart(8)}` : '';
+        return `[${method}]  ${tx.time}\n${items}\n${collected}${donation}`;
+      }).join('\n\n');
+
+      return `${day.dateLabel}  —  ${day.dayTotal}${day.dayDonation ? '  ' + day.dayDonation : ''}  (${day.txCount})
+${'─'.repeat(55)}
+${txLines || '  (no transactions)'}`;
+    }).join('\n\n' + '═'.repeat(55) + '\n\n');
+
+    const report = `ISKCON MONTREAL BOUTIQUE
+DATABASE RECORDS
+${'═'.repeat(55)}
+
+${dayBlocks || '(no records)'}
 
 ${'═'.repeat(55)}
               Hare Krishna
@@ -364,15 +579,36 @@ ${'═'.repeat(55)}`;
   },
 
   _renderAdmin() {
-    const saved      = loadStoredConfig();
-    this.sheetUrl    = saved.sheetUrl || CONFIG.GOOGLE_SHEET_CSV_URL || '';
-    this.connStatus  = '';
-    this.pastReports = Sales.getRecentDays(7).map(d => ({
+    const saved         = loadStoredConfig();
+    this.sheetUrl       = saved.sheetUrl    || CONFIG.GOOGLE_SHEET_CSV_URL || '';
+    this.connStatus     = '';
+    this.boutiqueKey    = saved.boutiqueKey || CONFIG.BOUTIQUE_WRITE_KEY   || '';
+    this.boutiqueStatus = '';
+    this.boutiqueClass  = 'conn-status';
+    this.pastReports    = Sales.getRecentDays(7).map(d => ({
       dateLabel: fmtDate(d.date),
       meta:      `${d.count} transactions · ${fmt(d.actualTotal)} received`,
       diff:      (d.difference > 0 ? '+' : '') + fmt(d.difference),
       diffClass: 'past-report-diff ' + (d.difference > 0 ? 'positive' : d.difference < 0 ? 'negative' : 'zero'),
     }));
+  },
+
+  saveBoutiqueKey() {
+    const saved           = loadStoredConfig();
+    saved.boutiqueKey     = this.boutiqueKey.trim();
+    localStorage.setItem(CONFIG.STORAGE_KEYS.CONFIG, JSON.stringify(saved));
+    CONFIG.BOUTIQUE_WRITE_KEY = saved.boutiqueKey;
+    this.boutiqueStatus   = 'Saved. Click "Test Connection" to verify.';
+    this.boutiqueClass    = 'conn-status success';
+  },
+
+  async testBoutiqueConnection() {
+    this.boutiqueStatus = 'Testing…';
+    this.boutiqueClass  = 'conn-status loading';
+    CONFIG.BOUTIQUE_WRITE_KEY = this.boutiqueKey.trim();
+    const { ok, message } = await DB.testConnection();
+    this.boutiqueStatus = message;
+    this.boutiqueClass  = 'conn-status ' + (ok ? 'success' : 'error');
   },
 
   async saveSheetUrl() {
@@ -408,9 +644,23 @@ ${'═'.repeat(55)}`;
     if (!confirm('This will erase ALL sales history and the cached catalog. Are you sure?')) return;
     if (!confirm('Last chance — delete everything?')) return;
     Sales.clearAll();
+    localStorage.removeItem(CONFIG.STORAGE_KEYS.SYNC_CURSOR);
     Catalog.items = SAMPLE_CATALOG.slice();
     this._renderAdmin();
     alert('All local data cleared.');
+  },
+
+  async clearBackendData() {
+    if (!DB.isConfigured()) { alert('Backend not configured.'); return; }
+    if (!confirm('This will permanently delete ALL sales from the backend database. Are you sure?')) return;
+    if (!confirm('Last chance — wipe the entire backend database?')) return;
+    try {
+      await DB.clearAll();
+      localStorage.removeItem(CONFIG.STORAGE_KEYS.SYNC_CURSOR);
+      alert('Backend database cleared.');
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
   },
 
   // ── Init ───────────────────────────────────────────────────────
