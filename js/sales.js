@@ -5,6 +5,12 @@
 
 import { CONFIG } from './config.js';
 
+function billingCategory(cat) {
+  if (cat === 'Books') return 'Book';
+  if (cat === 'Food')  return 'Restaurant';
+  return 'Boutique';
+}
+
 export const Sales = {
 
   // ── Transactions ─────────────────────────────────────────────────
@@ -24,6 +30,7 @@ export const Sales = {
         name:              i.name,
         suggestedDonation: i.suggestedDonation,
         qty:               i.qty,
+        category:          billingCategory(i.category),
       })),
       suggestedTotal:  +suggestedTotal.toFixed(2),
       actualDonation:  +actualDonation.toFixed(2),
@@ -84,7 +91,7 @@ export const Sales = {
 
       tx.items.forEach(item => {
         if (!itemMap[item.name]) {
-          itemMap[item.name] = { name: item.name, qty: 0, suggested: 0 };
+          itemMap[item.name] = { name: item.name, qty: 0, suggested: 0, category: item.category || 'Boutique' };
         }
         itemMap[item.name].qty       += item.qty;
         itemMap[item.name].suggested += item.suggestedDonation * item.qty;
