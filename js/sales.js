@@ -6,9 +6,19 @@
 import { CONFIG } from './config.js';
 
 function billingCategory(cat) {
-  if (cat === 'Books') return 'Book';
-  if (cat === 'Food')  return 'Restaurant';
-  return 'Boutique';
+  if (cat === 'Food')      return 'Restaurant';
+  if (cat === 'Books')     return 'Books';
+  if (cat === 'Donations') return 'Temple Donation';
+  return 'Boutique'; // Incense, Deities, Clothing, Other
+}
+
+export function normalizeBillingCat(cat) {
+  if (cat === 'Restaurant')      return 'Restaurant';
+  if (cat === 'Temple Donation') return 'Temple Donation';
+  if (cat === 'Books')           return 'Books';
+  if (cat === 'Food')            return 'Restaurant';      // raw catalog value
+  if (cat === 'Donations')       return 'Temple Donation'; // raw catalog value
+  return 'Boutique'; // undefined, '', 'Boutique', 'Incense', 'Deities', 'Clothing', 'Other'
 }
 
 export const Sales = {
@@ -45,12 +55,12 @@ export const Sales = {
   /** Return all transactions for today (local date). */
   getToday() {
     const todayKey = Sales._todayKey();
-    return Sales._loadAll().filter(tx => tx.timestamp.slice(0, 10) === todayKey);
+    return Sales._loadAll().filter(tx => Sales._localDateKey(tx.timestamp) === todayKey);
   },
 
   /** Return all transactions for a given YYYY-MM-DD date key. */
   getByDate(dateKey) {
-    return Sales._loadAll().filter(tx => tx.timestamp.slice(0, 10) === dateKey);
+    return Sales._loadAll().filter(tx => Sales._localDateKey(tx.timestamp) === dateKey);
   },
 
   /** Delete today's transactions. */
@@ -74,8 +84,9 @@ export const Sales = {
    * @returns {{ count, items, suggestedTotal, actualTotal, difference, percentage, byPayment }}
    */
   buildSummary(transactions) {
-    const itemMap  = {};
+    const itemMap   = {};
     const byPayment = { Cash: { count: 0, total: 0 }, Card: { count: 0, total: 0 } };
+    const byCategory = {};
     let suggestedTotal = 0;
     let actualTotal    = 0;
 
@@ -91,15 +102,32 @@ export const Sales = {
 
       tx.items.forEach(item => {
         if (!itemMap[item.name]) {
-          itemMap[item.name] = { name: item.name, qty: 0, suggested: 0, category: item.category || 'Boutique' };
+          itemMap[item.name] = { name: item.name, qty: 0, suggested: 0, category: normalizeBillingCat(item.category) };
         }
         itemMap[item.name].qty       += item.qty;
         itemMap[item.name].suggested += item.suggestedDonation * item.qty;
+
+        // Category revenue breakdown (skip Temple Donation — allocated per-tx below)
+        const cat = normalizeBillingCat(item.category);
+        if (cat !== 'Temple Donation') {
+          byCategory[cat] = (byCategory[cat] || 0) + item.suggestedDonation * item.qty;
+        }
       });
+
+      // Allocate Temple Donation revenue = actual minus all non-donation items
+      const hasDonationItem = tx.items.some(i => normalizeBillingCat(i.category) === 'Temple Donation');
+      if (hasDonationItem) {
+        const nonDonationTotal = tx.items
+          .filter(i => normalizeBillingCat(i.category) !== 'Temple Donation')
+          .reduce((s, i) => s + i.suggestedDonation * i.qty, 0);
+        const donationAmt = Math.max(0, tx.actualDonation - nonDonationTotal);
+        byCategory['Temple Donation'] = (byCategory['Temple Donation'] || 0) + donationAmt;
+      }
     });
 
-    // Round payment totals
+    // Round payment and category totals
     Object.values(byPayment).forEach(p => { p.total = +p.total.toFixed(2); });
+    Object.keys(byCategory).forEach(k => { byCategory[k] = +byCategory[k].toFixed(2); });
 
     const items      = Object.values(itemMap).sort((a, b) => a.name.localeCompare(b.name));
     const difference = actualTotal - suggestedTotal;
@@ -115,6 +143,7 @@ export const Sales = {
       difference:     +difference.toFixed(2),
       percentage,
       byPayment,
+      byCategory,
     };
   },
 
@@ -127,7 +156,7 @@ export const Sales = {
     const days = {};
 
     all.forEach(tx => {
-      const day = tx.timestamp.slice(0, 10);
+      const day = Sales._localDateKey(tx.timestamp);
       if (!days[day]) days[day] = [];
       days[day].push(tx);
     });
@@ -154,8 +183,12 @@ export const Sales = {
   },
 
   _todayKey() {
-    // Use local date (not UTC) so reports align with the cashier's timezone
-    const d = new Date();
+    return Sales._localDateKey(new Date().toISOString());
+  },
+
+  // Extract the LOCAL calendar date from a UTC ISO timestamp string
+  _localDateKey(isoTimestamp) {
+    const d = new Date(isoTimestamp);
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
