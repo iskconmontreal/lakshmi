@@ -1,8 +1,8 @@
 /**
  * ISKCON Montreal Boutique — Goloka REST API client
  *
- * POSTs new transactions to POST /api/boutique/sales (write key protected).
- * Reads history from  GET  /api/boutique/sales (public).
+ * POSTs new transactions to POST /api/commerce/boutique (write key protected).
+ * Reads history from  GET  /api/commerce/boutique (public).
  */
 
 import { CONFIG } from './config.js';
@@ -94,7 +94,7 @@ export const DB = {
    */
   async appendNew(newTxs) {
     if (newTxs.length === 0) return { count: 0 };
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/boutique/sales`, {
+    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/commerce/boutique`, {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
@@ -113,7 +113,7 @@ export const DB = {
    * Each day: { dateLabel, txCount, transactions[] }
    */
   async allSales() {
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/boutique/sales`);
+    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/commerce/boutique`);
     if (!res.ok) throw new Error(`API error ${res.status}`);
     return groupByDate(await res.json());
   },
@@ -122,7 +122,7 @@ export const DB = {
    * Delete all sales from the backend database. Write-key protected. For testing only.
    */
   async clearAll() {
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/boutique/sales`, {
+    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/commerce/boutique`, {
       method:  'DELETE',
       headers: { 'Authorization': `Bearer ${CONFIG.BOUTIQUE_WRITE_KEY}` },
     });
