@@ -337,24 +337,26 @@ export const state = sprae(document.body, {
   // ── Transaction History ────────────────────────────────────────
 
   async openDatabase() {
-    this.dbStatus = 'loading';
-    this.dbDays   = [];
-    this.dbOpen   = true;
-
-    if (DB.isConfigured()) {
-      try {
-        this.dbDays   = await DB.allSales();
-        this.dbStatus = '';
-        return;
-      } catch (err) {
-        console.warn('[DB] allSales failed, falling back to localStorage:', err.message);
-        this.dbStatus = 'error';
-      }
+    if (!DB.isConfigured()) {
+      // Sync path: set data before opening so Sprae renders modal with correct content
+      this.dbStatus = '';
+      this.dbDays   = this._buildDbDaysFromLocalStorage();
+      this.dbOpen   = true;
+      return;
     }
 
-    // Fallback: read from localStorage
-    this.dbStatus = '';
-    this.dbDays   = this._buildDbDaysFromLocalStorage();
+    // Async path: open immediately with loading state, then populate
+    this.dbDays   = [];
+    this.dbStatus = 'loading';
+    this.dbOpen   = true;
+    try {
+      this.dbDays   = await DB.allSales();
+      this.dbStatus = '';
+    } catch (err) {
+      console.warn('[DB] allSales failed, falling back to localStorage:', err.message);
+      this.dbStatus = '';
+      this.dbDays   = this._buildDbDaysFromLocalStorage();
+    }
   },
 
   _buildDbDaysFromLocalStorage() {
