@@ -337,10 +337,9 @@ export const state = sprae(document.body, {
   // ── Transaction History ────────────────────────────────────────
 
   async openDatabase() {
-    this.dbOpen   = false;
     this.dbStatus = 'loading';
     this.dbDays   = [];
-    this.dbOpen   = true; // open modal immediately so user sees loading state
+    this.dbOpen   = true;
 
     if (DB.isConfigured()) {
       try {

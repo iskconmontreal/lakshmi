@@ -66,7 +66,7 @@ export const Sales = {
   /** Delete today's transactions. */
   clearToday() {
     const key = Sales._todayKey();
-    const remaining = Sales._loadAll().filter(tx => tx.timestamp.slice(0, 10) !== key);
+    const remaining = Sales._loadAll().filter(tx => Sales._localDateKey(tx.timestamp) !== key);
     Sales._saveAll(remaining);
   },
 
