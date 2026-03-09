@@ -25,8 +25,8 @@ export const CONFIG = {
   },
 
   // ── Goloka backend (set via Admin panel) ──────────────────────
-  GOLOKA_URL:        'http://localhost:8080', //'https://api.iskconmontreal.ca',
-  BOUTIQUE_WRITE_KEY: '',  // set once via Admin panel, stored in localStorage
+  GOLOKA_URL:        'http://localhost:8080',//'https://api.iskconmontreal.ca',
+  BOUTIQUE_WRITE_KEY: '7e3f30789acdd730f4ec006952911bf78b0821655bdbdcda',  // set once via Admin panel, stored in localStorage
 };
 
 // ──────────────────────────────────────────────────────────────────
