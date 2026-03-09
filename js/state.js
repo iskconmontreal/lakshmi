@@ -7,7 +7,7 @@ import sprae from 'https://cdn.jsdelivr.net/npm/sprae/+esm';
 import { CONFIG, SAMPLE_CATALOG } from './config.js';
 import { Catalog } from './catalog.js';
 import { Cart } from './cart.js';
-import { Sales } from './sales.js';
+import { Sales, normalizeBillingCat } from './sales.js';
 import { DB } from './db.js';
 
 // ── Module-level non-reactive state ───────────────────────────────
@@ -90,6 +90,8 @@ export const state = sprae(document.body, {
   reportPctText:    '',
   reportPayRows:    [],
   reportHasPayRows: false,
+  reportCatRows:    [],
+  reportHasCatRows: false,
   reportTxList:     [],
 
   // Transaction history
@@ -259,8 +261,9 @@ export const state = sprae(document.body, {
   // ── Report ─────────────────────────────────────────────────────
 
   _categoryIcon(cat) {
-    if (cat === 'Book')       return '📚';
-    if (cat === 'Restaurant') return '🍽️';
+    if (cat === 'Restaurant')      return '🍽️';
+    if (cat === 'Books')           return '📚';
+    if (cat === 'Temple Donation') return '🙏';
     return '🛍️';
   },
 
@@ -288,10 +291,22 @@ export const state = sprae(document.body, {
         .filter(([, p]) => p.count > 0)
         .map(([method, p]) => ({ label: `${method} (${p.count} tx)`, total: fmt(p.total) }));
       this.reportHasPayRows = this.reportPayRows.length > 0;
+      this.reportCatRows = Object.entries(s.byCategory)
+        .filter(([, v]) => v > 0)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([cat, v]) => ({ label: cat, total: fmt(v) }));
+      this.reportHasCatRows = this.reportCatRows.length > 0;
       this.reportTxList = txs
         .slice()
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
-        .map(tx => ({
+        .map(tx => {
+          const hasDonationItem = tx.items.some(i => normalizeBillingCat(i.category) === 'Temple Donation');
+          const nonDonationSuggested = tx.items
+            .filter(i => normalizeBillingCat(i.category) !== 'Temple Donation')
+            .reduce((s, i) => s + i.suggestedDonation * i.qty, 0);
+          const donationItemAmt = Math.max(0, tx.actualDonation - nonDonationSuggested);
+          const extraDonation = hasDonationItem ? 0 : (tx.actualDonation - tx.suggestedTotal);
+          return {
           time:       new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }),
           methodIcon: this._methodIcon(tx.paymentMethod || 'Cash'),
           method:     tx.paymentMethod || 'Cash',
@@ -299,13 +314,16 @@ export const state = sprae(document.body, {
           items: tx.items.map(i => ({
             name:  i.name,
             qty:   i.qty,
-            price: fmt(i.suggestedDonation * i.qty),
-            icon:  this._categoryIcon(i.category || 'Boutique'),
+            price: normalizeBillingCat(i.category) === 'Temple Donation'
+              ? fmt(donationItemAmt)
+              : fmt(i.suggestedDonation * i.qty),
+            icon:  this._categoryIcon(normalizeBillingCat(i.category)),
           })),
-          donation: (tx.actualDonation - tx.suggestedTotal) > 0.005
-            ? '+' + fmt(tx.actualDonation - tx.suggestedTotal)
+          donation: extraDonation > 0.005
+            ? '+' + fmt(extraDonation)
             : null,
-        }));
+          };
+        });
     } catch (err) {
       console.error('[Report] Failed to build report:', err);
     }
@@ -319,10 +337,9 @@ export const state = sprae(document.body, {
   // ── Transaction History ────────────────────────────────────────
 
   async openDatabase() {
-    this.dbOpen   = false;
     this.dbStatus = 'loading';
     this.dbDays   = [];
-    this.dbOpen   = true; // open modal immediately so user sees loading state
+    this.dbOpen   = true;
 
     if (DB.isConfigured()) {
       try {
@@ -344,7 +361,7 @@ export const state = sprae(document.body, {
     const all  = Sales._loadAll();
     const days = {};
     all.forEach(tx => {
-      const day = tx.timestamp.slice(0, 10);
+      const day = Sales._localDateKey(tx.timestamp);
       if (!days[day]) days[day] = [];
       days[day].push(tx);
     });
@@ -353,26 +370,42 @@ export const state = sprae(document.body, {
       .map(([date, txs]) => {
         const totalCollected = txs.reduce((s, t) => s + (t.actualDonation || 0), 0);
         const totalDonation  = txs.reduce((s, t) => s + Math.max(0, (t.actualDonation || 0) - (t.suggestedTotal || 0)), 0);
+        const catMap = {};
+        txs.forEach(tx => (tx.items || []).forEach(item => {
+          const cat = normalizeBillingCat(item.category);
+          catMap[cat] = (catMap[cat] || 0) + item.suggestedDonation * item.qty;
+        }));
+        const catTotals = Object.entries(catMap)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([label, v]) => ({ label, total: fmt(v) }));
         return {
           dateLabel:   fmtDate(date),
           txCount:     txs.length + ' transaction' + (txs.length !== 1 ? 's' : ''),
           dayTotal:    fmt(totalCollected),
           dayDonation: totalDonation > 0.005 ? '+' + fmt(totalDonation) : null,
+          catTotals,
           transactions: txs
             .slice()
             .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
             .map(tx => {
-              const donation = (tx.actualDonation || 0) - (tx.suggestedTotal || 0);
+              const hasDonItem = tx.items.some(i => normalizeBillingCat(i.category) === 'Temple Donation');
+              const nonDonSuggested = tx.items
+                .filter(i => normalizeBillingCat(i.category) !== 'Temple Donation')
+                .reduce((s, i) => s + i.suggestedDonation * i.qty, 0);
+              const donItemAmt = Math.max(0, (tx.actualDonation || 0) - nonDonSuggested);
+              const extra = hasDonItem ? 0 : ((tx.actualDonation || 0) - (tx.suggestedTotal || 0));
               return {
                 time:      new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }),
                 method:    tx.paymentMethod || 'Cash',
                 collected: fmt(tx.actualDonation),
-                donation:  donation > 0.005 ? '+' + fmt(donation) : null,
+                donation:  extra > 0.005 ? '+' + fmt(extra) : null,
                 items:     tx.items.map(i => ({
                   name:     i.name,
                   qty:      i.qty,
-                  price:    fmt(i.suggestedDonation * i.qty),
-                  category: i.category || 'Boutique',
+                  price:    normalizeBillingCat(i.category) === 'Temple Donation'
+                    ? fmt(donItemAmt)
+                    : fmt(i.suggestedDonation * i.qty),
+                  category: normalizeBillingCat(i.category),
                 })),
               };
             }),
@@ -419,8 +452,9 @@ export const state = sprae(document.body, {
     const s    = Sales.buildSummary(txs);
 
     function printCat(cat) {
-      if (cat === 'Book')       return '[Book]';
-      if (cat === 'Restaurant') return '[Rest]';
+      if (cat === 'Restaurant')      return '[Rest]';
+      if (cat === 'Books')           return '[Book]';
+      if (cat === 'Temple Donation') return '[Donat]';
       return '[Shop]';
     }
 
@@ -441,10 +475,17 @@ export const state = sprae(document.body, {
           .map(tx => {
             const time   = new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' });
             const method = (tx.paymentMethod || 'Cash').toUpperCase();
+            const _nonDonSug = tx.items
+              .filter(i => normalizeBillingCat(i.category) !== 'Temple Donation')
+              .reduce((s, i) => s + i.suggestedDonation * i.qty, 0);
+            const _donAmt = Math.max(0, tx.actualDonation - _nonDonSug);
+            const _hasDon = tx.items.some(i => normalizeBillingCat(i.category) === 'Temple Donation');
             const items  = tx.items.map(i => {
               const name = ('  ' + i.name + ' \xd7' + i.qty).slice(0, 36).padEnd(36);
-              const amt  = fmt(i.suggestedDonation * i.qty).padStart(8);
-              const cat  = printCat(i.category || 'Boutique').padStart(7);
+              const raw  = normalizeBillingCat(i.category) === 'Temple Donation'
+                ? _donAmt : i.suggestedDonation * i.qty;
+              const amt  = fmt(raw).padStart(8);
+              const cat  = printCat(normalizeBillingCat(i.category)).padStart(7);
               return `${name}  ${amt}  ${cat}`;
             }).join('\n');
             const collected = `  ${'Collected:'.padEnd(36)}  ${fmt(tx.actualDonation).padStart(8)}`;
@@ -458,6 +499,11 @@ export const state = sprae(document.body, {
     const payLines  = Object.entries(s.byPayment)
       .filter(([, p]) => p.count > 0)
       .map(([method, p]) => `${'  ' + method + ' (' + p.count + ' tx):'.padEnd(22)}${fmt(p.total).padStart(12)}`)
+      .join('\n');
+    const catLines  = Object.entries(s.byCategory)
+      .filter(([, v]) => v > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([cat, v]) => `${'  ' + cat + ':'.padEnd(24)}${fmt(v).padStart(12)}`)
       .join('\n');
 
     const report = `ISKCON MONTREAL BOUTIQUE
@@ -489,6 +535,10 @@ PAYMENT BREAKDOWN:
 ${'─'.repeat(55)}
 ${payLines || '  (no transactions)'}
 
+REVENUE BY CATEGORY:
+${'─'.repeat(55)}
+${catLines || '  (no transactions)'}
+
 ${'═'.repeat(55)}
               Hare Krishna
 ${'═'.repeat(55)}`;
@@ -500,8 +550,9 @@ ${'═'.repeat(55)}`;
 
   printDatabase() {
     function printCat(cat) {
-      if (cat === 'Book')       return '[Book]';
-      if (cat === 'Restaurant') return '[Rest]';
+      if (cat === 'Restaurant')      return '[Rest]';
+      if (cat === 'Books')           return '[Book]';
+      if (cat === 'Temple Donation') return '[Donat]';
       return '[Shop]';
     }
 
@@ -519,8 +570,9 @@ ${'═'.repeat(55)}`;
         return `[${method}]  ${tx.time}\n${items}\n${collected}${donation}`;
       }).join('\n\n');
 
+      const catLine = (day.catTotals || []).map(ct => `${ct.label}: ${ct.total}`).join('  /  ');
       return `${day.dateLabel}  —  ${day.dayTotal}${day.dayDonation ? '  ' + day.dayDonation : ''}  (${day.txCount})
-${'─'.repeat(55)}
+${catLine ? '  ' + catLine + '\n' : ''}${'─'.repeat(55)}
 ${txLines || '  (no transactions)'}`;
     }).join('\n\n' + '═'.repeat(55) + '\n\n');
 

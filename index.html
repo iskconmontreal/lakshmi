@@ -76,7 +76,7 @@
                    :alt="item.name"
                    loading="lazy"
                    :style="{display: item.imageURL ? '' : 'none'}"
-                   :onerror="e => { e.target.style.display='none'; e.target.nextElementSibling.style.display=''; }">
+                   onerror="this.style.display='none'; this.nextElementSibling.style.display=''">
               <span class="product-img-fallback"
                     :style="{display: item.imageURL ? 'none' : ''}">&#128591;</span>
             </div>
@@ -304,6 +304,15 @@
             </div>
           </div>
         </div>
+        <div :if="reportHasCatRows">
+          <p class="report-section-title" style="margin-top:16px">Revenue by Category</p>
+          <div class="report-summary-box">
+            <div :each="row in reportCatRows" class="summary-row payment-row">
+              <span :text="row.label"></span>
+              <span :text="row.total"></span>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="modal-foot">
         <button class="btn btn-saffron"   :onclick="printReport">&#128424; Print Report</button>
@@ -339,6 +348,9 @@
               </span>
             </div>
             <span class="db-day-count" :text="day.txCount"></span>
+          </div>
+          <div class="db-day-cats" :if="day.catTotals && day.catTotals.length">
+            <span :each="ct in day.catTotals" class="db-day-cat" :text="ct.label + ': ' + ct.total"></span>
           </div>
           <div :each="tx in day.transactions" class="db-tx">
             <div class="db-tx-meta">

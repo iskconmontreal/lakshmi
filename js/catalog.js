@@ -86,7 +86,9 @@ export const Catalog = {
     const idx = {
       name:     headers.indexOf('name'),
       category: headers.indexOf('category'),
-      donation: headers.indexOf('suggesteddonation'),
+      donation: headers.indexOf('price') >= 0
+        ? headers.indexOf('price')
+        : headers.indexOf('suggesteddonation'),
       image:    headers.indexOf('imageurl'),
       desc:     headers.indexOf('description'),
     };

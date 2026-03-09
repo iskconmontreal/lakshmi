@@ -6,17 +6,13 @@
  */
 
 import { CONFIG } from './config.js';
+import { normalizeBillingCat } from './sales.js';
 
 // ── Helpers ───────────────────────────────────────────────────────
 function toCents(dollars) {
   return Math.round((parseFloat(dollars) || 0) * 100);
 }
 
-function billingCategory(cat) {
-  if (cat === 'Books') return 'Book';
-  if (cat === 'Food')  return 'Restaurant';
-  return 'Boutique';
-}
 
 function txToApiShape(tx) {
   return {
@@ -28,7 +24,7 @@ function txToApiShape(tx) {
       name:        item.name,
       qty:         item.qty,
       price_cents: toCents(item.suggestedDonation),
-      category:    billingCategory(item.category || ''),
+      category:    normalizeBillingCat(item.category),
     })),
   };
 }
@@ -51,10 +47,11 @@ function groupByDate(sales) {
         name:     i.name,
         qty:      i.qty,
         price:    '$' + (i.price_cents / 100).toFixed(2),
-        category: i.category || 'Boutique',
+        category: normalizeBillingCat(i.category),
       })),
       _c: s.collected_cents,
       _d: donationCents,
+      _rawItems: s.items || [],
     });
   }
 
@@ -64,12 +61,21 @@ function groupByDate(sales) {
       const d            = new Date(date + 'T12:00:00');
       const totalCents   = txs.reduce((s, t) => s + t._c, 0);
       const donationCents = txs.reduce((s, t) => s + t._d, 0);
+      const catCents = {};
+      txs.forEach(tx => tx._rawItems.forEach(i => {
+        const cat = normalizeBillingCat(i.category);
+        catCents[cat] = (catCents[cat] || 0) + i.price_cents * i.qty;
+      }));
+      const catTotals = Object.entries(catCents)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([label, v]) => ({ label, total: '$' + (v / 100).toFixed(2) }));
       return {
         dateLabel:   d.toLocaleDateString('en-CA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
         txCount:     txs.length + ' transaction' + (txs.length !== 1 ? 's' : ''),
         dayTotal:    '$' + (totalCents / 100).toFixed(2),
         dayDonation: donationCents > 0 ? '+$' + (donationCents / 100).toFixed(2) : null,
-        transactions: txs.map(({ _c, _d, ...t }) => t),
+        catTotals,
+        transactions: txs.map(({ _c, _d, _rawItems, ...t }) => t),
       };
     });
 }
