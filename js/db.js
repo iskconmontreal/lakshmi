@@ -139,7 +139,7 @@ export const DB = {
       return { ok: false, message: 'Goloka URL and write key are required.' };
     }
     try {
-      const res = await fetch(`${GOLOKA_URL}/api/boutique/sales`);
+      const res = await fetch(`${GOLOKA_URL}/api/commerce/boutique`);
       if (!res.ok) return { ok: false, message: `✗ API error ${res.status}` };
       const data = await res.json();
       const n = Array.isArray(data) ? data.length : '?';
