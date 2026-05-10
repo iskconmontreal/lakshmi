@@ -30,8 +30,23 @@ function esc(str) {
   return d.innerHTML;
 }
 
-function calcTotal(items) {
+function calcCatalogTotal(items) {
+  return items.reduce((sum, i) => sum + i.suggestedDonation * i.qty, 0);
+}
+function calcCartTotal(items) {
   return items.reduce((sum, i) => sum + (i.donation ?? i.suggestedDonation) * i.qty, 0);
+}
+function calcExplicitDonation(items) {
+  return items.reduce((sum, i) => {
+    if (normalizeBillingCat(i.category) !== 'Temple Donation') return sum;
+    return sum + (i.donation ?? i.suggestedDonation) * i.qty;
+  }, 0);
+}
+function calcCatalogNonDonationTotal(items) {
+  return items.reduce((sum, i) => {
+    if (normalizeBillingCat(i.category) === 'Temple Donation') return sum;
+    return sum + i.suggestedDonation * i.qty;
+  }, 0);
 }
 
 function loadStoredConfig() {
@@ -61,8 +76,10 @@ export const state = sprae(document.body, {
   // Cart
   cartItems:        [],
   suggestedTotal:   0,
+  cartTotal:        0,
   actualDonation:   '',
-  donationReceived: 0,
+  explicitDonation: 0,
+  overpayment:      0,
   manualOverride:   false,
   paymentMethod:    'Cash',
 
@@ -82,12 +99,10 @@ export const state = sprae(document.body, {
   reportTxCount:    '',
   reportItems:      [],
   reportHasItems:   false,
-  reportSuggested:  '',
-  reportActual:     '',
-  reportDiff:       '',
-  reportDiffLabel:  '',
-  reportDiffClass:  'summary-row',
-  reportPctText:    '',
+  reportSuggested:   '',
+  reportActual:      '',
+  reportDonation:    '',
+  reportOverpayment: '',
   reportPayRows:    [],
   reportHasPayRows: false,
   reportCatRows:    [],
@@ -183,9 +198,10 @@ export const state = sprae(document.body, {
   },
 
   onActualInput(e) {
-    this.manualOverride   = true;
-    this.actualDonation   = e.target.value;
-    this.donationReceived = Math.max(0, (parseFloat(e.target.value) || 0) - this.suggestedTotal);
+    this.manualOverride = true;
+    this.actualDonation = e.target.value;
+    const catalogND     = calcCatalogNonDonationTotal(this.cartItems);
+    this.overpayment    = Math.max(0, (parseFloat(e.target.value) || 0) - this.explicitDonation - catalogND);
   },
 
   setPayment(method) {
@@ -204,15 +220,18 @@ export const state = sprae(document.body, {
 
   _syncCart(keepOverride) {
     this.cartItems      = Cart.items.map(i => ({ ...i })); // spread so Sprae sees new objects
-    this.suggestedTotal = calcTotal(this.cartItems);
+    this.suggestedTotal = calcCatalogTotal(this.cartItems);
+    this.cartTotal      = calcCartTotal(this.cartItems);
     this.manualOverride = keepOverride && this.cartItems.length > 0;
     if (!this.manualOverride) {
-      this.actualDonation = this.suggestedTotal > 0
-        ? this.suggestedTotal.toFixed(2)
+      this.actualDonation = this.cartTotal > 0
+        ? this.cartTotal.toFixed(2)
         : '';
     }
     if (this.cartItems.length === 0) this.actualDonation = '';
-    this.donationReceived = Math.max(0, (parseFloat(this.actualDonation) || 0) - this.suggestedTotal);
+    this.explicitDonation = calcExplicitDonation(this.cartItems);
+    const catalogND       = calcCatalogNonDonationTotal(this.cartItems);
+    this.overpayment      = Math.max(0, (parseFloat(this.actualDonation) || 0) - this.explicitDonation - catalogND);
   },
 
   _flashCard(name) {
@@ -263,6 +282,7 @@ export const state = sprae(document.body, {
   _categoryIcon(cat) {
     if (cat === 'Restaurant')      return '🍽️';
     if (cat === 'Books')           return '📚';
+    if (cat === 'Sankirtan Books') return '📚';
     if (cat === 'Temple Donation') return '🙏';
     return '🛍️';
   },
@@ -279,14 +299,10 @@ export const state = sprae(document.body, {
       this.reportTxCount    = s.count + ' Transaction' + (s.count !== 1 ? 's' : '');
       this.reportItems      = s.items.map(i => ({ ...i, suggestedFmt: fmt(i.suggested), icon: this._categoryIcon(i.category) }));
       this.reportHasItems   = s.items.length > 0;
-      this.reportSuggested  = fmt(s.suggestedTotal);
-      this.reportActual     = fmt(s.actualTotal);
-      this.reportDiffLabel  = s.difference >= 0 ? 'Extra Received' : 'Below Suggested';
-      this.reportDiffClass  = 'summary-row ' + (s.difference > 0 ? 'diff-positive' : s.difference < 0 ? 'diff-negative' : 'diff-zero');
-      this.reportDiff       = (s.difference > 0 ? '+' : '') + fmt(s.difference);
-      this.reportPctText    = s.percentage !== null
-        ? `Devotees gave ${Math.abs(s.percentage)}% ${s.difference >= 0 ? 'above' : 'below'} the suggested total`
-        : '';
+      this.reportSuggested   = fmt(s.suggestedTotal);
+      this.reportActual      = fmt(s.actualTotal);
+      this.reportDonation    = fmt(s.donationTotal);
+      this.reportOverpayment = fmt(s.overpaymentTotal);
       this.reportPayRows    = Object.entries(s.byPayment)
         .filter(([, p]) => p.count > 0)
         .map(([method, p]) => ({ label: `${method} (${p.count} tx)`, total: fmt(p.total) }));
@@ -300,12 +316,14 @@ export const state = sprae(document.body, {
         .slice()
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
         .map(tx => {
-          const hasDonationItem = tx.items.some(i => normalizeBillingCat(i.category) === 'Temple Donation');
-          const nonDonationSuggested = tx.items
+          const txDonation = tx.items
+            .filter(i => normalizeBillingCat(i.category) === 'Temple Donation')
+            .reduce((s, i) => s + (i.donation ?? i.suggestedDonation) * i.qty, 0);
+          const txCatalogND = tx.items
             .filter(i => normalizeBillingCat(i.category) !== 'Temple Donation')
             .reduce((s, i) => s + i.suggestedDonation * i.qty, 0);
-          const donationItemAmt = Math.max(0, tx.actualDonation - nonDonationSuggested);
-          const extraDonation = hasDonationItem ? 0 : (tx.actualDonation - tx.suggestedTotal);
+          const txOverpayment = Math.max(0, tx.actualDonation - txDonation - txCatalogND);
+          const txExtra = txDonation + txOverpayment;
           return {
           time:       new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }),
           methodIcon: this._methodIcon(tx.paymentMethod || 'Cash'),
@@ -315,13 +333,11 @@ export const state = sprae(document.body, {
             name:  i.name,
             qty:   i.qty,
             price: normalizeBillingCat(i.category) === 'Temple Donation'
-              ? fmt(donationItemAmt)
+              ? fmt((i.donation ?? i.suggestedDonation) * i.qty)
               : fmt(i.suggestedDonation * i.qty),
             icon:  this._categoryIcon(normalizeBillingCat(i.category)),
           })),
-          donation: extraDonation > 0.005
-            ? '+' + fmt(extraDonation)
-            : null,
+          donation: txExtra > 0.005 ? '+' + fmt(txExtra) : null,
           };
         });
     } catch (err) {
@@ -375,7 +391,10 @@ export const state = sprae(document.body, {
         const catMap = {};
         txs.forEach(tx => (tx.items || []).forEach(item => {
           const cat = normalizeBillingCat(item.category);
-          catMap[cat] = (catMap[cat] || 0) + item.suggestedDonation * item.qty;
+          const amt = cat === 'Temple Donation'
+            ? (item.donation ?? item.suggestedDonation) * item.qty
+            : item.suggestedDonation * item.qty;
+          catMap[cat] = (catMap[cat] || 0) + amt;
         }));
         const catTotals = Object.entries(catMap)
           .sort(([a], [b]) => a.localeCompare(b))
@@ -390,22 +409,17 @@ export const state = sprae(document.body, {
             .slice()
             .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
             .map(tx => {
-              const hasDonItem = tx.items.some(i => normalizeBillingCat(i.category) === 'Temple Donation');
-              const nonDonSuggested = tx.items
-                .filter(i => normalizeBillingCat(i.category) !== 'Temple Donation')
-                .reduce((s, i) => s + i.suggestedDonation * i.qty, 0);
-              const donItemAmt = Math.max(0, (tx.actualDonation || 0) - nonDonSuggested);
-              const extra = hasDonItem ? 0 : ((tx.actualDonation || 0) - (tx.suggestedTotal || 0));
+              const txExtra = Math.max(0, (tx.actualDonation || 0) - (tx.suggestedTotal || 0));
               return {
                 time:      new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }),
                 method:    tx.paymentMethod || 'Cash',
                 collected: fmt(tx.actualDonation),
-                donation:  extra > 0.005 ? '+' + fmt(extra) : null,
+                donation:  txExtra > 0.005 ? '+' + fmt(txExtra) : null,
                 items:     tx.items.map(i => ({
                   name:     i.name,
                   qty:      i.qty,
                   price:    normalizeBillingCat(i.category) === 'Temple Donation'
-                    ? fmt(donItemAmt)
+                    ? fmt((i.donation ?? i.suggestedDonation) * i.qty)
                     : fmt(i.suggestedDonation * i.qty),
                   category: normalizeBillingCat(i.category),
                 })),
@@ -456,6 +470,7 @@ export const state = sprae(document.body, {
     function printCat(cat) {
       if (cat === 'Restaurant')      return '[Rest]';
       if (cat === 'Books')           return '[Book]';
+      if (cat === 'Sankirtan Books') return '[Book]';
       if (cat === 'Temple Donation') return '[Donat]';
       return '[Shop]';
     }
@@ -477,15 +492,11 @@ export const state = sprae(document.body, {
           .map(tx => {
             const time   = new Date(tx.timestamp).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' });
             const method = (tx.paymentMethod || 'Cash').toUpperCase();
-            const _nonDonSug = tx.items
-              .filter(i => normalizeBillingCat(i.category) !== 'Temple Donation')
-              .reduce((s, i) => s + i.suggestedDonation * i.qty, 0);
-            const _donAmt = Math.max(0, tx.actualDonation - _nonDonSug);
-            const _hasDon = tx.items.some(i => normalizeBillingCat(i.category) === 'Temple Donation');
             const items  = tx.items.map(i => {
               const name = ('  ' + i.name + ' \xd7' + i.qty).slice(0, 36).padEnd(36);
               const raw  = normalizeBillingCat(i.category) === 'Temple Donation'
-                ? _donAmt : i.suggestedDonation * i.qty;
+                ? (i.donation ?? i.suggestedDonation) * i.qty
+                : i.suggestedDonation * i.qty;
               const amt  = fmt(raw).padStart(8);
               const cat  = printCat(normalizeBillingCat(i.category)).padStart(7);
               return `${name}  ${amt}  ${cat}`;
@@ -495,9 +506,6 @@ export const state = sprae(document.body, {
           }).join('\n\n')
       : '  (no transactions)';
 
-    const diffSign  = s.difference > 0 ? '+' : '';
-    const diffLabel = s.difference >= 0 ? 'Extra Received  ' : 'Below Suggested ';
-    const pctLine   = s.percentage !== null ? `  (${diffSign}${s.percentage}%)` : '';
     const payLines  = Object.entries(s.byPayment)
       .filter(([, p]) => p.count > 0)
       .map(([method, p]) => `${'  ' + method + ' (' + p.count + ' tx):'.padEnd(22)}${fmt(p.total).padStart(12)}`)
@@ -530,8 +538,9 @@ ${'─'.repeat(55)}
 
 SUMMARY:
   Item Total:         ${fmt(s.suggestedTotal).padStart(12)}
+  Donation:           ${fmt(s.donationTotal).padStart(12)}
+  Over-Payment:       ${fmt(s.overpaymentTotal).padStart(12)}
   Total Collected:    ${fmt(s.actualTotal).padStart(12)}
-  ${diffLabel}  ${(diffSign + fmt(s.difference)).padStart(12)}  ${pctLine}
 
 PAYMENT BREAKDOWN:
 ${'─'.repeat(55)}
@@ -554,6 +563,7 @@ ${'═'.repeat(55)}`;
     function printCat(cat) {
       if (cat === 'Restaurant')      return '[Rest]';
       if (cat === 'Books')           return '[Book]';
+      if (cat === 'Sankirtan Books') return '[Book]';
       if (cat === 'Temple Donation') return '[Donat]';
       return '[Shop]';
     }
@@ -567,9 +577,10 @@ ${'═'.repeat(55)}`;
           const cat  = printCat(i.category).padStart(7);
           return `${name}  ${amt}  ${cat}`;
         }).join('\n');
-        const collected = `  ${'Collected:'.padEnd(36)}  ${tx.collected.padStart(8)}`;
-        const donation  = tx.donation ? `\n  ${'Donation:'.padEnd(36)}  ${tx.donation.padStart(8)}` : '';
-        return `[${method}]  ${tx.time}\n${items}\n${collected}${donation}`;
+        const collected   = `  ${'Collected:'.padEnd(36)}  ${tx.collected.padStart(8)}`;
+        const donation    = tx.donation    ? `\n  ${'Donation:'.padEnd(36)}  ${tx.donation.padStart(8)}` : '';
+        const overpayment = tx.overpayment ? `\n  ${'Over-Payment:'.padEnd(36)}  ${tx.overpayment.padStart(8)}` : '';
+        return `[${method}]  ${tx.time}\n${items}\n${collected}${donation}${overpayment}`;
       }).join('\n\n');
 
       const catLine = (day.catTotals || []).map(ct => `${ct.label}: ${ct.total}`).join('  /  ');

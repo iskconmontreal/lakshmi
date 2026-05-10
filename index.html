@@ -128,12 +128,17 @@
         <div class="cart-footer">
           <div class="suggested-total-row">
             <span class="label-suggested">ITEMS TOTAL</span>
-            <span class="value-suggested" :text="fmt(suggestedTotal)">$0.00</span>
+            <span class="value-suggested" :text="fmt(cartTotal)">$0.00</span>
           </div>
 
           <div class="suggested-total-row">
-            <span class="label-suggested">DONATION RECEIVED</span>
-            <span class="value-suggested value-donation" :text="fmt(donationReceived)">$0.00</span>
+            <span class="label-suggested">DONATION</span>
+            <span class="value-suggested value-donation" :text="fmt(explicitDonation)">$0.00</span>
+          </div>
+
+          <div class="suggested-total-row">
+            <span class="label-suggested">OVER-PAYMENT</span>
+            <span class="value-suggested value-donation" :text="fmt(overpayment)">$0.00</span>
           </div>
 
           <div class="cart-divider"></div>
@@ -284,11 +289,14 @@
             <span>Item Total</span>
             <span :text="reportSuggested"></span>
           </div>
-          <div :class="reportDiffClass">
-            <span :text="reportDiffLabel"></span>
-            <span :text="reportDiff"></span>
+          <div class="summary-row diff-positive">
+            <span>Donation</span>
+            <span :text="reportDonation"></span>
           </div>
-          <p class="summary-percentage" :if="reportPctText" :text="reportPctText"></p>
+          <div class="summary-row diff-positive">
+            <span>Over-Payment</span>
+            <span :text="reportOverpayment"></span>
+          </div>
           <div class="summary-row main">
             <span>Total Collected</span>
             <span :text="reportActual"></span>
@@ -344,7 +352,8 @@
               <span class="db-day-label" :text="day.dateLabel"></span>
               <span class="db-day-summary">
                 <span class="db-day-total-inline" :text="day.dayTotal"></span>
-                <span class="db-day-donation-inline" :if="day.dayDonation" :text="day.dayDonation"></span>
+                <span class="db-day-donation-inline" :if="day.dayDonation" :text="'Don ' + day.dayDonation"></span>
+                <span class="db-day-donation-inline" :if="day.dayOverpayment" :text="'Over ' + day.dayOverpayment"></span>
               </span>
             </div>
             <span class="db-day-count" :text="day.txCount"></span>
@@ -371,6 +380,10 @@
             <div class="db-tx-donation" :if="tx.donation">
               <span>Donation</span>
               <span :text="tx.donation"></span>
+            </div>
+            <div class="db-tx-donation" :if="tx.overpayment">
+              <span>Over-Payment</span>
+              <span :text="tx.overpayment"></span>
             </div>
           </div>
         </div>

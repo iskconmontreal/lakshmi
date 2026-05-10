@@ -152,7 +152,8 @@ export const Catalog = {
     return Catalog.items.filter(item => {
       const matchesQ   = !q || item.name.toLowerCase().includes(q) ||
                                 (item.description || '').toLowerCase().includes(q);
-      const matchesCat = !cat || cat === 'All' || item.category === cat;
+      const matchesCat = !cat || cat === 'All' || item.category === cat
+                         || (cat === 'Books' && item.category === 'Sankirtan Books');
       return matchesQ && matchesCat;
     });
   },

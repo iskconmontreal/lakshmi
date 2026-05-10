@@ -6,15 +6,17 @@
 import { CONFIG } from './config.js';
 
 function billingCategory(cat) {
-  if (cat === 'Food')      return 'Restaurant';
-  if (cat === 'Books')     return 'Books';
-  if (cat === 'Donations') return 'Temple Donation';
+  if (cat === 'Food')            return 'Restaurant';
+  if (cat === 'Sankirtan Books') return 'Sankirtan Books';
+  if (cat === 'Books')           return 'Books';
+  if (cat === 'Donations')       return 'Temple Donation';
   return 'Boutique'; // Incense, Deities, Clothing, Other
 }
 
 export function normalizeBillingCat(cat) {
   if (cat === 'Restaurant')      return 'Restaurant';
   if (cat === 'Temple Donation') return 'Temple Donation';
+  if (cat === 'Sankirtan Books') return 'Sankirtan Books';
   if (cat === 'Books')           return 'Books';
   if (cat === 'Food')            return 'Restaurant';      // raw catalog value
   if (cat === 'Donations')       return 'Temple Donation'; // raw catalog value
@@ -39,6 +41,7 @@ export const Sales = {
       items:          cartItems.map(i => ({
         name:              i.name,
         suggestedDonation: i.suggestedDonation,
+        donation:          i.donation ?? i.suggestedDonation,
         qty:               i.qty,
         category:          billingCategory(i.category),
       })),
@@ -87,8 +90,10 @@ export const Sales = {
     const itemMap   = {};
     const byPayment = { Cash: { count: 0, total: 0 }, Card: { count: 0, total: 0 } };
     const byCategory = {};
-    let suggestedTotal = 0;
-    let actualTotal    = 0;
+    let suggestedTotal   = 0;
+    let actualTotal      = 0;
+    let donationTotal    = 0;
+    let overpaymentTotal = 0;
 
     transactions.forEach(tx => {
       suggestedTotal += tx.suggestedTotal;
@@ -100,29 +105,31 @@ export const Sales = {
       byPayment[method].count += 1;
       byPayment[method].total += tx.actualDonation;
 
+      let txExplicitDonation   = 0;
+      let txCatalogNonDonation = 0;
+
       tx.items.forEach(item => {
         if (!itemMap[item.name]) {
           itemMap[item.name] = { name: item.name, qty: 0, suggested: 0, category: normalizeBillingCat(item.category) };
         }
-        itemMap[item.name].qty       += item.qty;
-        itemMap[item.name].suggested += item.suggestedDonation * item.qty;
+        itemMap[item.name].qty += item.qty;
 
-        // Category revenue breakdown (skip Temple Donation — allocated per-tx below)
         const cat = normalizeBillingCat(item.category);
-        if (cat !== 'Temple Donation') {
-          byCategory[cat] = (byCategory[cat] || 0) + item.suggestedDonation * item.qty;
+        if (cat === 'Temple Donation') {
+          const lineAmt = (item.donation ?? item.suggestedDonation) * item.qty;
+          itemMap[item.name].suggested += lineAmt;
+          txExplicitDonation += lineAmt;
+        } else {
+          const lineAmt = item.suggestedDonation * item.qty;
+          itemMap[item.name].suggested += lineAmt;
+          txCatalogNonDonation += lineAmt;
+          byCategory[cat] = (byCategory[cat] || 0) + lineAmt;
         }
       });
 
-      // Allocate Temple Donation revenue = actual minus all non-donation items
-      const hasDonationItem = tx.items.some(i => normalizeBillingCat(i.category) === 'Temple Donation');
-      if (hasDonationItem) {
-        const nonDonationTotal = tx.items
-          .filter(i => normalizeBillingCat(i.category) !== 'Temple Donation')
-          .reduce((s, i) => s + i.suggestedDonation * i.qty, 0);
-        const donationAmt = Math.max(0, tx.actualDonation - nonDonationTotal);
-        byCategory['Temple Donation'] = (byCategory['Temple Donation'] || 0) + donationAmt;
-      }
+      byCategory['Temple Donation'] = (byCategory['Temple Donation'] || 0) + txExplicitDonation;
+      donationTotal    += txExplicitDonation;
+      overpaymentTotal += Math.max(0, tx.actualDonation - txExplicitDonation - txCatalogNonDonation);
     });
 
     // Round payment and category totals
@@ -138,9 +145,11 @@ export const Sales = {
     return {
       count: transactions.length,
       items,
-      suggestedTotal: +suggestedTotal.toFixed(2),
-      actualTotal:    +actualTotal.toFixed(2),
-      difference:     +difference.toFixed(2),
+      suggestedTotal:   +suggestedTotal.toFixed(2),
+      actualTotal:      +actualTotal.toFixed(2),
+      difference:       +difference.toFixed(2),
+      donationTotal:    +donationTotal.toFixed(2),
+      overpaymentTotal: +overpaymentTotal.toFixed(2),
       percentage,
       byPayment,
       byCategory,

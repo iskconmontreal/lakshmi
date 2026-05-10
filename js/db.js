@@ -1,8 +1,8 @@
 /**
  * ISKCON Montreal Boutique — Goloka REST API client
  *
- * POSTs new transactions to POST /api/commerce/boutique (write key protected).
- * Reads history from  GET  /api/commerce/boutique (public).
+ * POSTs new transactions to POST /api/finance/counter-sale (write key protected).
+ * Reads history from  GET  /api/finance/counter-sale (public).
  */
 
 import { CONFIG } from './config.js';
@@ -20,30 +20,39 @@ function txToApiShape(tx) {
     due_cents:       toCents(tx.suggestedTotal),
     collected_cents: toCents(tx.actualDonation),
     payment_method:  tx.paymentMethod || 'Cash',
-    items: tx.items.map(item => ({
-      name:        item.name,
-      qty:         item.qty,
-      price_cents: toCents(item.suggestedDonation),
-      category:    normalizeBillingCat(item.category),
-    })),
+    items: tx.items.map(item => {
+      const cat  = normalizeBillingCat(item.category);
+      const unit = cat === 'Temple Donation'
+        ? (item.donation ?? item.suggestedDonation)
+        : item.suggestedDonation;
+      return {
+        name:        item.name,
+        qty:         item.qty,
+        price_cents: toCents(unit),
+        category:    cat,
+      };
+    }),
   };
 }
 
 
 function groupByDate(sales) {
-  // sales: array of { id, occurred_at, due_cents, collected_cents, payment_method, items[] }
+  // sales: array of { id, occurred_at, due_cents, collected_cents, payment_method,
+  //                   temple_donation_cents, overpayment_cents, items[] }
   // sorted newest-first by the API
   const days = {};
   for (const s of sales) {
     const day = s.occurred_at.slice(0, 10);
     if (!days[day]) days[day] = [];
-    const donationCents = Math.max(0, s.collected_cents - s.due_cents);
+    const donationCents    = s.temple_donation_cents ?? 0;
+    const overpaymentCents = s.overpayment_cents ?? Math.max(0, s.collected_cents - s.due_cents - donationCents);
     days[day].push({
-      time:      new Date(s.occurred_at).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }),
-      method:    s.payment_method,
-      collected: '$' + (s.collected_cents / 100).toFixed(2),
-      donation:  donationCents > 0 ? '+$' + (donationCents / 100).toFixed(2) : null,
-      items:     (s.items || []).map(i => ({
+      time:        new Date(s.occurred_at).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }),
+      method:      s.payment_method,
+      collected:   '$' + (s.collected_cents / 100).toFixed(2),
+      donation:    donationCents    > 0 ? '+$' + (donationCents    / 100).toFixed(2) : null,
+      overpayment: overpaymentCents > 0 ? '+$' + (overpaymentCents / 100).toFixed(2) : null,
+      items:       (s.items || []).map(i => ({
         name:     i.name,
         qty:      i.qty,
         price:    '$' + (i.price_cents / 100).toFixed(2),
@@ -51,6 +60,7 @@ function groupByDate(sales) {
       })),
       _c: s.collected_cents,
       _d: donationCents,
+      _o: overpaymentCents,
       _rawItems: s.items || [],
     });
   }
@@ -58,9 +68,10 @@ function groupByDate(sales) {
   return Object.entries(days)
     .sort(([a], [b]) => b.localeCompare(a))
     .map(([date, txs]) => {
-      const d            = new Date(date + 'T12:00:00');
-      const totalCents   = txs.reduce((s, t) => s + t._c, 0);
-      const donationCents = txs.reduce((s, t) => s + t._d, 0);
+      const d                 = new Date(date + 'T12:00:00');
+      const totalCents        = txs.reduce((s, t) => s + t._c, 0);
+      const donationCents     = txs.reduce((s, t) => s + t._d, 0);
+      const overpaymentCents  = txs.reduce((s, t) => s + t._o, 0);
       const catCents = {};
       txs.forEach(tx => tx._rawItems.forEach(i => {
         const cat = normalizeBillingCat(i.category);
@@ -70,12 +81,13 @@ function groupByDate(sales) {
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([label, v]) => ({ label, total: '$' + (v / 100).toFixed(2) }));
       return {
-        dateLabel:   d.toLocaleDateString('en-CA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-        txCount:     txs.length + ' transaction' + (txs.length !== 1 ? 's' : ''),
-        dayTotal:    '$' + (totalCents / 100).toFixed(2),
-        dayDonation: donationCents > 0 ? '+$' + (donationCents / 100).toFixed(2) : null,
+        dateLabel:      d.toLocaleDateString('en-CA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+        txCount:        txs.length + ' transaction' + (txs.length !== 1 ? 's' : ''),
+        dayTotal:       '$' + (totalCents        / 100).toFixed(2),
+        dayDonation:    donationCents    > 0 ? '+$' + (donationCents    / 100).toFixed(2) : null,
+        dayOverpayment: overpaymentCents > 0 ? '+$' + (overpaymentCents / 100).toFixed(2) : null,
         catTotals,
-        transactions: txs.map(({ _c, _d, _rawItems, ...t }) => t),
+        transactions: txs.map(({ _c, _d, _o, _rawItems, ...t }) => t),
       };
     });
 }
@@ -94,7 +106,7 @@ export const DB = {
    */
   async appendNew(newTxs) {
     if (newTxs.length === 0) return { count: 0 };
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/commerce/boutique`, {
+    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/finance/counter-sale`, {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
@@ -103,9 +115,9 @@ export const DB = {
       body: JSON.stringify({ sales: newTxs.map(txToApiShape) }),
     });
     if (!res.ok) throw new Error(`API error ${res.status}`);
-    const json = await res.json();
+    await res.json();
     const last = newTxs[newTxs.length - 1].timestamp;
-    return { count: json.count, cursor: last };
+    return { count: newTxs.length, cursor: last };
   },
 
   /**
@@ -113,7 +125,7 @@ export const DB = {
    * Each day: { dateLabel, txCount, transactions[] }
    */
   async allSales() {
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/commerce/boutique`);
+    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/finance/counter-sale`);
     if (!res.ok) throw new Error(`API error ${res.status}`);
     return groupByDate(await res.json());
   },
@@ -122,7 +134,7 @@ export const DB = {
    * Delete all sales from the backend database. Write-key protected. For testing only.
    */
   async clearAll() {
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/commerce/boutique`, {
+    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/finance/counter-sale`, {
       method:  'DELETE',
       headers: { 'Authorization': `Bearer ${CONFIG.BOUTIQUE_WRITE_KEY}` },
     });
@@ -139,7 +151,7 @@ export const DB = {
       return { ok: false, message: 'Goloka URL and write key are required.' };
     }
     try {
-      const res = await fetch(`${GOLOKA_URL}/api/commerce/boutique`);
+      const res = await fetch(`${GOLOKA_URL}/api/finance/counter-sale`);
       if (!res.ok) return { ok: false, message: `✗ API error ${res.status}` };
       const data = await res.json();
       const n = Array.isArray(data) ? data.length : '?';
