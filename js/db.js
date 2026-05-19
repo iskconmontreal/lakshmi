@@ -15,23 +15,25 @@ function toCents(dollars) {
 
 
 function txToApiShape(tx) {
+  const items = tx.items.map(item => {
+    const cat  = normalizeBillingCat(item.category);
+    const unit = cat === 'Temple Donation'
+      ? (item.donation ?? item.suggestedDonation)
+      : item.suggestedDonation;
+    return {
+      name:        item.name,
+      qty:         item.qty,
+      price_cents: toCents(unit),
+      category:    cat,
+    };
+  });
+  const dueCents = items.reduce((sum, i) => sum + i.price_cents * i.qty, 0);
   return {
     occurred_at:     tx.timestamp,
-    due_cents:       toCents(tx.suggestedTotal),
+    due_cents:       dueCents,
     collected_cents: toCents(tx.actualDonation),
     payment_method:  tx.paymentMethod || 'Cash',
-    items: tx.items.map(item => {
-      const cat  = normalizeBillingCat(item.category);
-      const unit = cat === 'Temple Donation'
-        ? (item.donation ?? item.suggestedDonation)
-        : item.suggestedDonation;
-      return {
-        name:        item.name,
-        qty:         item.qty,
-        price_cents: toCents(unit),
-        category:    cat,
-      };
-    }),
+    items,
   };
 }
 
