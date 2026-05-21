@@ -69,9 +69,12 @@ export const state = sprae(document.body, {
   catalogItems:   [],
   catalogLoading: true,
   catalogNotice:  '',
-  searchQuery:    '',
-  activeCategory: 'All',
-  categories:     ['All', 'Food', 'Books', 'Incense', 'Deities', 'Clothing', 'Donations', 'Other'],
+  searchQuery:        '',
+  activeCategory:     'All',
+  categories:         ['All', 'Food', 'Books', 'Incense', 'Deities', 'Clothing', 'Donations', 'Other'],
+  activeLanguage:     'All',
+  availableLanguages: [],
+  showLanguageFilter: false,
 
   // Cart
   cartItems:        [],
@@ -138,7 +141,12 @@ export const state = sprae(document.body, {
     this.catalogNotice  = '';
     try {
       const result = await Catalog.load(force);
-      this.catalogItems = Catalog.filter(this.searchQuery, this.activeCategory);
+      this.availableLanguages = [...new Set(
+        Catalog.items
+          .filter(i => i.category === 'Sankirtan Books' && i.language)
+          .map(i => i.language)
+      )].sort();
+      this.catalogItems = Catalog.filter(this.searchQuery, this.activeCategory, this.activeLanguage);
       if (result.source === 'sample') {
         this.catalogNotice = 'No Google Sheet configured — showing sample catalog. Open Admin to connect your real inventory.';
       } else if (result.source === 'cache') {
@@ -152,7 +160,7 @@ export const state = sprae(document.body, {
 
   onSearch(e) {
     this.searchQuery  = e.target.value;
-    this.catalogItems = Catalog.filter(this.searchQuery, this.activeCategory);
+    this.catalogItems = Catalog.filter(this.searchQuery, this.activeCategory, this.activeLanguage);
   },
 
   setCategory(cat) {
@@ -162,7 +170,15 @@ export const state = sprae(document.body, {
       const input = document.querySelector('.search-input');
       if (input) input.value = '';
     }
-    this.catalogItems = Catalog.filter(this.searchQuery, this.activeCategory);
+    const onBooks = cat === 'Books';
+    this.showLanguageFilter = onBooks && this.availableLanguages.length > 0;
+    if (!onBooks) this.activeLanguage = 'All';
+    this.catalogItems = Catalog.filter(this.searchQuery, this.activeCategory, this.activeLanguage);
+  },
+
+  setLanguage(lang) {
+    this.activeLanguage = lang;
+    this.catalogItems   = Catalog.filter(this.searchQuery, this.activeCategory, this.activeLanguage);
   },
 
   // ── Cart ───────────────────────────────────────────────────────

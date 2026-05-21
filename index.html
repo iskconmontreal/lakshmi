@@ -56,6 +56,17 @@
                     :onclick="() => setCategory(cat)">
             </button>
           </div>
+          <div class="category-filters" :if="showLanguageFilter && availableLanguages.length">
+            <button class="filter-btn"
+                    :class="{active: activeLanguage === 'All'}"
+                    :onclick="() => setLanguage('All')">All</button>
+            <button :each="lang in availableLanguages"
+                    class="filter-btn"
+                    :class="{active: lang === activeLanguage}"
+                    :text="lang"
+                    :onclick="() => setLanguage(lang)">
+            </button>
+          </div>
         </div>
 
         <!-- Product Grid -->
@@ -82,8 +93,12 @@
             </div>
             <div class="product-body">
               <div class="product-name"     :text="item.name"></div>
+              <div class="product-language" :if="item.language" :text="item.language"></div>
               <div class="product-donation" :text="item.suggestedDonation > 0 ? 'Suggested: ' + fmt(item.suggestedDonation) : 'Any donation welcome'"></div>
               <div class="product-category" :text="item.category"></div>
+              <div class="product-stock"    :if="item.stock != null"
+                                            :class="{'product-stock--empty': item.stock === 0}"
+                                            :text="item.stock > 0 ? item.stock + ' in stock' : 'Out of stock'"></div>
             </div>
           </div>
         </div>
@@ -99,7 +114,10 @@
         <div id="cart-items" class="cart-items">
           <p class="cart-empty-msg" :if="cartItems.length === 0">Cart is empty &mdash; tap an item to add it</p>
           <div :each="item in cartItems" class="cart-item">
-            <div class="ci-name" :text="item.name"></div>
+            <div class="ci-name">
+              <span :text="item.name"></span>
+              <span class="ci-sublabel" :if="item.language" :text="item.language + ' · ' + item.category"></span>
+            </div>
             <div class="ci-price" :class="{'ci-price--discounted': item.donation < item.suggestedDonation}">
               <span class="ci-price-symbol">$</span>
               <input class="ci-price-input"

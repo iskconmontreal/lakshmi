@@ -39,7 +39,9 @@ export const Sales = {
     const tx = {
       timestamp:      new Date().toISOString(),
       items:          cartItems.map(i => ({
+        id:                i.id ?? null,
         name:              i.name,
+        language:          i.language || '',
         suggestedDonation: i.suggestedDonation,
         donation:          i.donation ?? i.suggestedDonation,
         qty:               i.qty,

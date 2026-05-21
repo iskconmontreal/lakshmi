@@ -16,44 +16,81 @@ export const Catalog = {
    * @returns {{ source: string, count: number }}
    */
   async load(force = false) {
+    // Always kick off a fresh Goloka fetch; fall back to its own cache on failure.
+    const sankirtanPromise = Catalog._fetchSankirtanBooks()
+      .then(items => {
+        // Always overwrite the cache with the freshest list, even if empty,
+        // so a deactivation propagates correctly on the next offline reload.
+        Catalog._writeSankirtanCache(items);
+        return items;
+      })
+      .catch(err => {
+        console.warn('[Catalog] Sankirtan fetch failed:', err.message);
+        return Catalog._readSankirtanCache() || [];
+      });
+
+    // Sheet: cache-first unless force.
     const savedConfig = Catalog._loadConfig();
-    const sheetUrl = savedConfig.sheetUrl || CONFIG.GOOGLE_SHEET_CSV_URL;
+    const sheetUrl    = savedConfig.sheetUrl || CONFIG.GOOGLE_SHEET_CSV_URL;
+    if (force) localStorage.removeItem(CONFIG.STORAGE_KEYS.CATALOG_CACHE);
+    const cachedSheet = force ? null : Catalog._readCache();
 
-    if (sheetUrl) {
-      // Clear cache if forcing a refresh
-      if (force) {
-        localStorage.removeItem(CONFIG.STORAGE_KEYS.CATALOG_CACHE);
-      }
-
-      // Try cached version first (when not forcing)
-      if (!force) {
-        const cached = Catalog._readCache();
-        if (cached) {
-          Catalog.items = cached;
-          return { source: 'cache', count: cached.length };
-        }
-      }
-
-      // Fetch from Google Sheet
+    let sheetItems = [];
+    if (cachedSheet) {
+      // Strip any sankirtan rows left in the legacy merged cache so they don't
+      // duplicate the fresh Goloka items we're about to layer on.
+      sheetItems = cachedSheet.filter(i => i.category !== 'Sankirtan Books');
+    } else if (sheetUrl) {
       try {
-        const items = await Catalog._fetchSheet(sheetUrl);
-        Catalog.items = items;
-        Catalog._writeCache(items);
-        return { source: 'sheet', count: items.length };
+        sheetItems = await Catalog._fetchSheet(sheetUrl);
+        Catalog._writeCache(sheetItems);
       } catch (err) {
         console.warn('[Catalog] Sheet fetch failed:', err.message);
-        // Fall through to try cache one more time
-        const cached = Catalog._readCache();
-        if (cached) {
-          Catalog.items = cached;
-          return { source: 'cache', count: cached.length };
-        }
+        const fallback = Catalog._readCache();
+        sheetItems = fallback ? fallback.filter(i => i.category !== 'Sankirtan Books') : [];
       }
     }
 
-    // No sheet URL or fetch failed and no cache → sample data
-    Catalog.items = SAMPLE_CATALOG.slice();
-    return { source: 'sample', count: Catalog.items.length };
+    const sankirtanItems = await sankirtanPromise;
+    const merged = [...sheetItems, ...sankirtanItems];
+
+    if (merged.length === 0) {
+      Catalog.items = SAMPLE_CATALOG.slice();
+      return { source: 'sample', count: Catalog.items.length };
+    }
+
+    Catalog.items = merged;
+    const parts = [];
+    if (sheetItems.length)     parts.push(cachedSheet ? 'sheet-cache' : 'sheet');
+    if (sankirtanItems.length) parts.push('goloka');
+    return { source: parts.join('+'), count: merged.length };
+  },
+
+  /**
+   * Fetch sankirtan books from Goloka. Returns items in the same shape as
+   * the Sheet parser, with extra `id`, `language`, and `stock` fields.
+   * @returns {Promise<Array>}
+   */
+  async _fetchSankirtanBooks() {
+    if (!CONFIG.GOLOKA_URL || !CONFIG.BOUTIQUE_WRITE_KEY) return [];
+    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/sankirtan/books`, {
+      headers: { 'Authorization': `Bearer ${CONFIG.BOUTIQUE_WRITE_KEY}` },
+      cache:   'no-store',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const books = await res.json();
+    return (books || [])
+      .filter(b => b.active === true && b.boutique_price_cents > 0)
+      .map(b => ({
+        id:                b.id,
+        name:              b.title,
+        language:          b.language || '',
+        category:          'Sankirtan Books',
+        suggestedDonation: b.boutique_price_cents / 100,
+        stock:             b.stock,
+        imageURL:          '',
+        description:       '',
+      }));
   },
 
   /**
@@ -143,18 +180,21 @@ export const Catalog = {
 
   /**
    * Return filtered catalog items.
-   * @param {string} query  - Text search
+   * @param {string} query  - Text search (matches name, description, and language)
    * @param {string} cat    - Category name or 'All'
+   * @param {string} [lang] - Language name (sankirtan books only) or 'All'
    * @returns {Array}
    */
-  filter(query, cat) {
+  filter(query, cat, lang) {
     const q = (query || '').toLowerCase().trim();
     return Catalog.items.filter(item => {
-      const matchesQ   = !q || item.name.toLowerCase().includes(q) ||
-                                (item.description || '').toLowerCase().includes(q);
-      const matchesCat = !cat || cat === 'All' || item.category === cat
-                         || (cat === 'Books' && item.category === 'Sankirtan Books');
-      return matchesQ && matchesCat;
+      const matchesQ    = !q || item.name.toLowerCase().includes(q) ||
+                                 (item.description || '').toLowerCase().includes(q) ||
+                                 (item.language    || '').toLowerCase().includes(q);
+      const matchesCat  = !cat  || cat  === 'All' || item.category === cat
+                          || (cat === 'Books' && item.category === 'Sankirtan Books');
+      const matchesLang = !lang || lang === 'All' || !item.language || item.language === lang;
+      return matchesQ && matchesCat && matchesLang;
     });
   },
 
@@ -172,6 +212,24 @@ export const Catalog = {
   _readCache() {
     try {
       const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.CATALOG_CACHE);
+      if (!raw) return null;
+      const { items } = JSON.parse(raw);
+      return Array.isArray(items) && items.length > 0 ? items : null;
+    } catch (_) { return null; }
+  },
+
+  _writeSankirtanCache(items) {
+    try {
+      localStorage.setItem(CONFIG.STORAGE_KEYS.SANKIRTAN_CACHE, JSON.stringify({
+        ts: Date.now(),
+        items,
+      }));
+    } catch (_) { /* quota exceeded – ignore */ }
+  },
+
+  _readSankirtanCache() {
+    try {
+      const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.SANKIRTAN_CACHE);
       if (!raw) return null;
       const { items } = JSON.parse(raw);
       return Array.isArray(items) && items.length > 0 ? items : null;

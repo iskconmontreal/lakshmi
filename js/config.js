@@ -18,10 +18,11 @@ export const CONFIG = {
   CURRENCY_SYMBOL: '$',
 
   STORAGE_KEYS: {
-    CATALOG_CACHE: 'iskcon_catalog_cache',
-    SALES:         'iskcon_sales',
-    CONFIG:        'iskcon_config',
-    SYNC_CURSOR:   'iskcon_sync_cursor',
+    CATALOG_CACHE:   'iskcon_catalog_cache',
+    SANKIRTAN_CACHE: 'iskcon_sankirtan_cache',
+    SALES:           'iskcon_sales',
+    CONFIG:          'iskcon_config',
+    SYNC_CURSOR:     'iskcon_sync_cursor',
   },
 
   // ── Goloka backend (set via Admin panel) ──────────────────────

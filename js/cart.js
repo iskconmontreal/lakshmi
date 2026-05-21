@@ -5,7 +5,7 @@
  */
 
 export const Cart = {
-  /** @type {{ name: string, category: string, suggestedDonation: number, qty: number, imageURL: string }[]} */
+  /** @type {{ id?: any, name: string, category: string, language?: string, suggestedDonation: number, qty: number, imageURL: string }[]} */
   items: [],
 
   /** Add one unit of a product. If already in cart, increment qty. */
@@ -15,8 +15,10 @@ export const Cart = {
       existing.qty += 1;
     } else {
       Cart.items.push({
+        id:                product.id ?? null,
         name:              product.name,
         category:          product.category,
+        language:          product.language || '',
         suggestedDonation: product.suggestedDonation,
         donation:          product.suggestedDonation, // cashier-editable unit price
         qty:               1,

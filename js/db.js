@@ -20,12 +20,14 @@ function txToApiShape(tx) {
     const unit = cat === 'Temple Donation'
       ? (item.donation ?? item.suggestedDonation)
       : item.suggestedDonation;
-    return {
+    const out = {
       name:        item.name,
       qty:         item.qty,
       price_cents: toCents(unit),
       category:    cat,
     };
+    if (item.id != null) out.sankirtan_book_id = item.id;
+    return out;
   });
   const dueCents = items.reduce((sum, i) => sum + i.price_cents * i.qty, 0);
   return {

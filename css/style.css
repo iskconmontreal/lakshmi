@@ -308,6 +308,37 @@ body {
   font-weight: 500;
 }
 
+.product-language {
+  display: inline-block;
+  align-self: flex-start;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--c-boutique-strong);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin: 2px 0;
+}
+
+.product-stock {
+  font-size: 0.67rem;
+  font-weight: 600;
+  color: var(--c-text-dim);
+  letter-spacing: 0.4px;
+  margin-top: 2px;
+}
+.product-stock--empty {
+  color: #c0392b;
+}
+
+.ci-sublabel {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--c-text-dim);
+  margin-top: 2px;
+}
+
 /* ════════════════════════════════════════
    CART PANEL
    ════════════════════════════════════════ */
