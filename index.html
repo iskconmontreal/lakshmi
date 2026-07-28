@@ -16,7 +16,7 @@
         <h1>ISKCON Montreal Boutique</h1>
         <p class="header-subtitle">Hare Krishna &mdash; Donation-Based Store</p>
       </div>
-      <div class="header-actions">
+      <div class="header-actions" :if="!needLogin">
         <button class="btn btn-outline-white" :onclick="() => loadCatalog(true)" title="Reload catalog from Google Sheet">
           &#8635; Refresh Catalog
         </button>
@@ -29,15 +29,89 @@
         <button class="btn btn-ghost-white" :onclick="toggleAdmin" :text="isAdminMode ? '← Back to POS' : 'Admin'">
           Admin
         </button>
+        <span class="header-user" :if="userName" :text="userName"></span>
+        <button class="btn btn-ghost-white" :onclick="logout">Sign out</button>
       </div>
     </div>
   </header>
 
+  <!-- offline / pending / archive notices -->
+  <div class="offline-banner" :if="isOffline">Offline — sales are saved on this device and will sync automatically.</div>
+  <div class="offline-banner offline-banner--danger" :if="archiveWarning" :text="archiveWarning"></div>
+  <div class="pending-banner" :if="pendingCount > 0 && !needLogin">
+    <div class="pending-text">
+      <strong :text="pendingCount + ' sale(s) pending'"></strong>
+      <span :if="!pendingError">Could not reach Goloka — kept safe on this device.</span>
+      <span class="pending-error" :if="pendingError" :text="pendingError"></span>
+    </div>
+    <button class="btn btn-sm btn-outline-dark" :onclick="retryPending">Retry now</button>
+    <button class="btn btn-sm btn-outline-dark" :onclick="discardPending">Discard</button>
+  </div>
+
   <!-- ═══ MAIN ═══ -->
   <main id="app-main">
 
+    <!-- ── LOGIN ── -->
+    <section class="login-section" :if="needLogin">
+      <div class="login-card">
+        <h2 class="login-title">Boutique POS — Sign in</h2>
+        <p class="login-hint">Use your ISKCON Montréal (Goloka) account.</p>
+
+        <div class="catalog-notice" :if="authError" :text="authError"></div>
+
+        <form :if="authStep === 'email'" :onsubmit.prevent="authSubmitEmail()">
+          <label class="field-label">Email</label>
+          <input class="text-input" type="email" autocomplete="email" required
+                 placeholder="you@example.com"
+                 :value="authEmail" :oninput="e => authEmail = e.target.value">
+          <button class="btn btn-saffron btn-block" type="submit"
+                  :disabled="authLoading"
+                  :text="authLoading ? 'Checking…' : 'Continue'"></button>
+        </form>
+
+        <form :if="authStep === 'password'" :onsubmit.prevent="authSubmitPassword()">
+          <label class="field-label">Password</label>
+          <input class="text-input" type="password" autocomplete="current-password" required autofocus
+                 :value="authPassword" :oninput="e => authPassword = e.target.value">
+          <button class="btn btn-saffron btn-block" type="submit"
+                  :disabled="authLoading"
+                  :text="authLoading ? 'Signing in…' : 'Sign In'"></button>
+          <button class="link-btn" type="button" :onclick="_showLogin()">← Different email</button>
+        </form>
+
+        <form :if="authStep === 'otp'" :onsubmit.prevent="authVerifyOtp()">
+          <label class="field-label">Verification code</label>
+          <p class="login-hint">A 6-digit code was emailed to <span :text="authEmail"></span>.</p>
+          <input class="text-input" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                 placeholder="000000" required autofocus autocomplete="one-time-code"
+                 :value="authOtp" :oninput="e => authOtp = e.target.value">
+          <button class="btn btn-saffron btn-block" type="submit"
+                  :disabled="authLoading"
+                  :text="authLoading ? 'Verifying…' : 'Verify'"></button>
+          <button class="link-btn" type="button" :onclick="_showLogin()">← Start over</button>
+        </form>
+
+        <div :if="authStep === 'email'">
+          <div class="login-divider">or continue with</div>
+          <button class="btn btn-outline-dark btn-block btn-google" :onclick="authGoogle()" aria-label="Sign in with Google">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4" />
+              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
+              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05" />
+              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
+            </svg>
+            Google
+          </button>
+        </div>
+
+        <p class="login-hint" style="margin-top:1rem;">
+          No account? Ask the temple admin to add you in Mandir (Users → Boutique Cashier role).
+        </p>
+      </div>
+    </section>
+
     <!-- ── CASHIER MODE ── -->
-    <div id="cashier-mode" class="cashier-layout" :if="!isAdminMode">
+    <div id="cashier-mode" class="cashier-layout" :if="!isAdminMode && !needLogin">
 
       <!-- Catalog Section -->
       <section id="catalog-section" class="catalog-section">
@@ -195,7 +269,7 @@
     </div>
 
     <!-- ── ADMIN MODE ── -->
-    <div id="admin-mode" class="admin-mode" :if="isAdminMode">
+    <div id="admin-mode" class="admin-mode" :if="isAdminMode && !needLogin">
       <div class="admin-panel">
         <h2 class="admin-title">Admin Panel</h2>
 
@@ -213,18 +287,23 @@
           <a :if="sheetUrl" :href="sheetUrl" target="_blank" rel="noopener" class="sheet-link">&#8599; Open Google Sheet</a>
         </div>
 
-        <!-- Boutique Database Config -->
+        <!-- Account & Sync -->
         <div class="admin-card">
-          <h3>Boutique Database</h3>
-          <p class="admin-hint">Enter the write key to sync sales to the backend database. Ask your administrator for this key.</p>
-          <label class="admin-label">Boutique Write Key</label>
-          <input type="password" class="admin-url-input" placeholder="Write key from server"
-                 :value="boutiqueKey" :oninput="e => boutiqueKey = e.target.value">
+          <h3>Account &amp; Sync</h3>
+          <p class="admin-hint">
+            Signed in as <strong :text="userName || '—'"></strong>. Sales sync to Goloka
+            automatically; the controls below handle anything left pending.
+          </p>
           <div class="admin-row">
-            <button class="btn btn-saffron"     :onclick="saveBoutiqueKey">Save</button>
-            <button class="btn btn-outline-dark" :onclick="testBoutiqueConnection">Test Connection</button>
+            <span class="conn-status" :text="pendingCount + ' sale(s) pending · ' + archiveCount + ' kept on this device'"></span>
           </div>
-          <div :class="boutiqueClass" :if="boutiqueStatus" :text="boutiqueStatus"></div>
+          <div class="admin-row">
+            <button class="btn btn-saffron" :onclick="retryPending" :disabled="pendingCount === 0">Retry pending</button>
+            <button class="btn btn-outline-dark" :onclick="repushAll" :disabled="repushing"
+                    :text="repushing ? 'Re-sending…' : 'Re-send all to Goloka'"></button>
+            <button class="btn btn-ghost-dark" :onclick="logout">Sign out</button>
+          </div>
+          <div class="conn-status" :if="repushStatus" :text="repushStatus"></div>
         </div>
 
         <!-- How-to -->
@@ -426,10 +505,11 @@
   </div>
 
   <!-- ═══ TOAST ═══ -->
+  <!-- Sale receipts carry the "Thank you" title + icon; sync/status notices show text only -->
   <div class="toast" :class="{hidden: !toastVisible}" role="status">
-    <span class="toast-icon">&#128591;</span>
+    <span class="toast-icon" :if="toastTitle">&#128591;</span>
     <div class="toast-text">
-      <strong>Thank you! Hare Krishna</strong>
+      <strong :if="toastTitle" :text="toastTitle"></strong>
       <span :text="toastText"></span>
     </div>
   </div>

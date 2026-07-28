@@ -4,6 +4,8 @@
  */
 
 import { CONFIG, SAMPLE_CATALOG } from './config.js';
+import { DB } from './db.js';
+import { auth } from './auth.js';
 
 export const Catalog = {
   /** Currently loaded items */
@@ -72,21 +74,19 @@ export const Catalog = {
    * @returns {Promise<Array>}
    */
   async _fetchSankirtanBooks() {
-    if (!CONFIG.GOLOKA_URL || !CONFIG.BOUTIQUE_WRITE_KEY) return [];
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/sankirtan/books`, {
-      headers: { 'Authorization': `Bearer ${CONFIG.BOUTIQUE_WRITE_KEY}` },
-      cache:   'no-store',
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const books = await res.json();
+    // Only cashiers who can create sankirtan sessions may sell books at the till,
+    // so hide them from anyone lacking sankirtan:create. Not signed in → skip too;
+    // load() falls back to the sankirtan cache.
+    if (!auth.active || !auth.can('sankirtan:create')) return [];
+    const books = await DB.getBooks();
     return (books || [])
-      .filter(b => b.active === true && b.boutique_price_cents > 0)
+      .filter(b => b.active === true && b.retail_price_cents > 0)
       .map(b => ({
         id:                b.id,
         name:              b.title,
         language:          b.language || '',
         category:          'Sankirtan Books',
-        suggestedDonation: b.boutique_price_cents / 100,
+        suggestedDonation: b.retail_price_cents / 100,
         stock:             b.stock,
         imageURL:          '',
         description:       '',

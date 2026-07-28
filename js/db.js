@@ -1,20 +1,27 @@
 /**
  * ISKCON Montreal Boutique — Goloka REST API client
  *
- * POSTs new transactions to POST /api/finance/counter-sale (write key protected).
- * Reads history from  GET  /api/finance/counter-sale (public).
+ * Per-user JWT auth (ported from sankirtan-pos): every request carries the
+ * logged-in cashier's token. On a 401 the client silently refreshes and retries
+ * once; if that fails the error carries `authExpired: true` so callers can queue
+ * the sale and show the login step.
+ *
+ * Sales POST to /api/finance/counter-sale with an Idempotency-Key (one per sale)
+ * so a retry can never create a duplicate.
  */
 
 import { CONFIG } from './config.js';
+import { auth } from './auth.js';
 import { normalizeBillingCat } from './sales.js';
 
-// ── Helpers ───────────────────────────────────────────────────────
-function toCents(dollars) {
+// ── Cart → API shape helpers ──────────────────────────────────────
+export function toCents(dollars) {
   return Math.round((parseFloat(dollars) || 0) * 100);
 }
 
-
-function txToApiShape(tx) {
+// Build the per-sale POST body from a stored transaction. Exported because the
+// sync module (offline queue + legacy migration) reuses it.
+export function txToApiShape(tx) {
   const items = tx.items.map(item => {
     const cat  = normalizeBillingCat(item.category);
     const unit = cat === 'Temple Donation'
@@ -38,7 +45,6 @@ function txToApiShape(tx) {
     items,
   };
 }
-
 
 function groupByDate(sales) {
   // sales: array of { id, occurred_at, due_cents, collected_cents, payment_method,
@@ -96,68 +102,175 @@ function groupByDate(sales) {
     });
 }
 
+// ── JWT request core (ported from sankirtan-pos) ──────────────────
+function _base() {
+  return CONFIG.GOLOKA_URL.replace(/\/$/, '');
+}
+
+function _headers(extra) {
+  const h = {
+    'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': 'true',
+    ...extra,
+  };
+  if (auth.token) h['Authorization'] = `Bearer ${auth.token}`;
+  return h;
+}
+
+async function _shapeError(resp) {
+  let msg = `HTTP ${resp.status}`;
+  try { const e = await resp.json(); msg = e.error || e.message || msg; } catch (_) {}
+  const err = new Error(msg);
+  err.status = resp.status;
+  return err;
+}
+
+// Single-flight refresh: concurrent 401s share one /auth/refresh round-trip.
+let _refreshPromise = null;
+
+async function _tryRefresh() {
+  const rt = auth.refreshToken;
+  if (!rt) return false;
+  try {
+    const resp = await fetch(`${_base()}/auth/refresh`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+      body:    JSON.stringify({ refresh_token: rt }),
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    if (!data.token) return false;
+    auth.save(data.token, data.user, data.refresh_token);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function _request(path, opts = {}, retried = false) {
+  const resp = await fetch(`${_base()}${path}`, {
+    ...opts,
+    headers: _headers(opts.headers),
+  });
+  if (resp.status === 401 && auth.refreshToken && !retried) {
+    if (!_refreshPromise) _refreshPromise = _tryRefresh().finally(() => { _refreshPromise = null; });
+    if (await _refreshPromise) return _request(path, opts, true);
+    auth.clear();
+    const err = new Error('Signed out — please sign in again');
+    err.status = 401;
+    err.authExpired = true;
+    throw err;
+  }
+  if (resp.status === 401 || resp.status === 403) {
+    const err = await _shapeError(resp);
+    if (resp.status === 401) { auth.clear(); err.authExpired = true; }
+    throw err;
+  }
+  if (!resp.ok) throw await _shapeError(resp);
+  return resp;
+}
+
 // ── Public API ────────────────────────────────────────────────────
 export const DB = {
+  // ── Auth ──────────────────────────────────────────────
 
-  isConfigured() {
-    return !!(CONFIG.GOLOKA_URL && CONFIG.BOUTIQUE_WRITE_KEY);
-  },
-
-  /**
-   * Append new transactions to the Goloka database.
-   * Caller passes only transactions not yet synced (delta since sync cursor).
-   * @returns {{ count, cursor }}
-   */
-  async appendNew(newTxs) {
-    if (newTxs.length === 0) return { count: 0 };
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/finance/counter-sale`, {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${CONFIG.BOUTIQUE_WRITE_KEY}`,
-      },
-      body: JSON.stringify({ sales: newTxs.map(txToApiShape) }),
+  // POST /auth/login — returns {step:'password_required'|'otp_required'} or {token,…}
+  async login(email, password) {
+    const resp = await _request('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        password:     password || '',
+        device_id:    auth.deviceId,
+        device_label: auth.deviceLabel,
+      }),
     });
-    if (!res.ok) throw new Error(`API error ${res.status}`);
-    await res.json();
-    const last = newTxs[newTxs.length - 1].timestamp;
-    return { count: newTxs.length, cursor: last };
+    return resp.json();
   },
 
-  /**
-   * Return all sales grouped by local date, newest first.
-   * Each day: { dateLabel, txCount, transactions[] }
-   */
-  async allSales() {
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/finance/counter-sale`);
-    if (!res.ok) throw new Error(`API error ${res.status}`);
-    return groupByDate(await res.json());
-  },
-
-  /**
-   * Delete all sales from the backend database. Write-key protected. For testing only.
-   */
-  async clearAll() {
-    const res = await fetch(`${CONFIG.GOLOKA_URL}/api/finance/counter-sale`, {
-      method:  'DELETE',
-      headers: { 'Authorization': `Bearer ${CONFIG.BOUTIQUE_WRITE_KEY}` },
+  // POST /auth/verify-otp — returns {token, user, refresh_token}
+  async verifyOtp(email, otp) {
+    const resp = await _request('/auth/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        otp,
+        device_id:    auth.deviceId,
+        device_label: auth.deviceLabel,
+      }),
     });
-    if (!res.ok) throw new Error(`API error ${res.status}`);
-    return res.json();
+    return resp.json();
   },
 
-  /**
-   * Test the Goloka connection. Returns { ok, message }.
-   */
-  async testConnection() {
-    const { GOLOKA_URL, BOUTIQUE_WRITE_KEY } = CONFIG;
-    if (!GOLOKA_URL || !BOUTIQUE_WRITE_KEY) {
-      return { ok: false, message: 'Goloka URL and write key are required.' };
-    }
+  // GET /auth/google — returns {url} to navigate to. The callback returns the
+  // browser to this page with tokens in the URL fragment (auth.capture()).
+  async googleUrl() {
+    const redirect = window.location.href.split('#')[0].split('?')[0];
+    const resp = await _request(`/auth/google?redirect=${encodeURIComponent(redirect)}&device_id=${encodeURIComponent(auth.deviceId)}`);
+    return resp.json();
+  },
+
+  // POST /auth/logout — revoke this device's refresh token (best-effort).
+  async logout() {
     try {
-      const res = await fetch(`${GOLOKA_URL}/api/finance/counter-sale`);
-      if (!res.ok) return { ok: false, message: `✗ API error ${res.status}` };
-      const data = await res.json();
+      await _request('/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ device_id: auth.deviceId }),
+      });
+    } catch (_) {}
+  },
+
+  // ── Sankirtan catalog (boutique sells these books too) ─
+  async getBooks() {
+    const resp = await _request('/api/sankirtan/books', { cache: 'no-store' });
+    return resp.json();
+  },
+
+  // ── Counter sales ─────────────────────────────────────
+
+  // POST /api/finance/counter-sale — one sale, attributed server-side to the JWT
+  // user. `idempotency_key` (required) is sent as `Idempotency-Key` so a retry
+  // can't create a duplicate. Batch of exactly one, per the server contract.
+  async postSale(payload, idempotency_key) {
+    const resp = await _request('/api/finance/counter-sale', {
+      method:  'POST',
+      headers: { 'Idempotency-Key': idempotency_key },
+      body:    JSON.stringify({ sales: [payload] }),
+    });
+    return resp.json();
+  },
+
+  // Re-push a stored sale (retry / disaster recovery). Reports whether Goloka
+  // already had it via the `Idempotent-Replay: true` header.
+  async repostSale(payload, idempotency_key) {
+    const resp = await _request('/api/finance/counter-sale', {
+      method:  'POST',
+      headers: { 'Idempotency-Key': idempotency_key },
+      body:    JSON.stringify({ sales: [payload] }),
+    });
+    return {
+      result:   await resp.json(),
+      replayed: resp.headers.get('Idempotent-Replay') === 'true',
+    };
+  },
+
+  // GET /api/finance/counter-sale — all sales grouped by local date, newest first.
+  async allSales() {
+    const resp = await _request('/api/finance/counter-sale', { cache: 'no-store' });
+    return groupByDate(await resp.json());
+  },
+
+  // DELETE /api/finance/counter-sale — wipe backend sales (requires boutique:manage).
+  async clearAll() {
+    const resp = await _request('/api/finance/counter-sale', { method: 'DELETE' });
+    return resp.json();
+  },
+
+  // Lightweight authenticated ping — returns { ok, message }.
+  async testConnection() {
+    try {
+      const resp = await _request('/api/finance/counter-sale', { cache: 'no-store' });
+      const data = await resp.json();
       const n = Array.isArray(data) ? data.length : '?';
       return { ok: true, message: `✓ Connected. ${n} sale${n !== 1 ? 's' : ''} in database.` };
     } catch (err) {

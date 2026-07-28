@@ -8,11 +8,14 @@ import { CONFIG, SAMPLE_CATALOG } from './config.js';
 import { Catalog } from './catalog.js';
 import { Cart } from './cart.js';
 import { Sales, normalizeBillingCat } from './sales.js';
-import { DB } from './db.js';
+import { DB, txToApiShape } from './db.js';
+import { auth } from './auth.js';
+import { Sync } from './sync.js';
 
 // ── Module-level non-reactive state ───────────────────────────────
 let _pendingConfirm = null;
 let _toastTimer     = null;
+let _retrying       = false; // retryPending() reentrancy guard — reachable from banner, report, login, and auto-sync
 
 // ── Helpers ───────────────────────────────────────────────────────
 function fmt(n) { return '$' + parseFloat(n || 0).toFixed(2); }
@@ -57,8 +60,7 @@ function loadStoredConfig() {
 function applyStoredConfig() {
   try {
     const saved = loadStoredConfig();
-    if (saved.sheetUrl)    CONFIG.GOOGLE_SHEET_CSV_URL = saved.sheetUrl;
-    if (saved.boutiqueKey) CONFIG.BOUTIQUE_WRITE_KEY   = saved.boutiqueKey;
+    if (saved.sheetUrl) CONFIG.GOOGLE_SHEET_CSV_URL = saved.sheetUrl;
   } catch (_) {}
 }
 
@@ -89,6 +91,7 @@ export const state = sprae(document.body, {
   // UI
   isAdminMode:  false,
   toastVisible: false,
+  toastTitle:   '',   // 'Thank you! Hare Krishna' for sale receipts; empty for sync/status notices
   toastText:    '',
 
   // Warning dialog
@@ -126,9 +129,25 @@ export const state = sprae(document.body, {
   connStatus:     '',
   connClass:      'conn-status',
   pastReports:    [],
-  boutiqueKey:    '',
-  boutiqueStatus: '',
-  boutiqueClass:  'conn-status',
+
+  // Auth (per-user Goloka login)
+  needLogin:   true,
+  authStep:    'email', // 'email' | 'password' | 'otp'
+  authEmail:   '',
+  authPassword:'',
+  authOtp:     '',
+  authError:   '',
+  authLoading: false,
+  userName:    '',
+
+  // Offline sync
+  isOffline:     false,
+  pendingCount:  0,
+  pendingError:  '',
+  archiveCount:  0,
+  archiveWarning:'',
+  repushing:     false,
+  repushStatus:  '',
 
   // Helper exposed to templates
   fmt,
@@ -286,11 +305,60 @@ export const state = sprae(document.body, {
   },
 
   _finalizeSale(suggested, actual) {
-    Sales.record(Cart.items, suggested, actual, this.paymentMethod);
+    // Record locally first (the reporting store + the receipt toast never depend
+    // on connectivity), then fire the Goloka submit without awaiting so the till
+    // is instantly ready for the next customer.
+    const tx = Sales.record(Cart.items, suggested, actual, this.paymentMethod);
     this._showToast(actual, this.paymentMethod);
     Cart.clear();
     this._syncCart(false);
     this.paymentMethod = 'Cash';
+    this._submitSale(txToApiShape(tx), Sync.newKey());
+  },
+
+  // Push one sale to Goloka. On any failure the sale is queued (already safe in
+  // the local reporting store) and auto-retried on reconnect. Adapted from
+  // sankirtan-pos submitSession.
+  async _submitSale(payload, key) {
+    try {
+      const result = await DB.postSale(payload, key);
+      this._reportArchive(Sync.saveRecent(result, payload, key));
+      this.archiveCount = Sync.getRecent().length;
+    } catch (err) {
+      console.warn('[DB] postSale failed:', err.message);
+      Sync.savePending(payload, key, auth.userId);
+      this.pendingCount = Sync.getPending().length;
+      this.isOffline    = true;
+      if (err.authExpired) {
+        this.pendingError = '';
+        this._banner('✗ Signed out — the sale is kept SAFE on this device. Sign in to submit.');
+        this._showLogin();
+      } else if (err.status) {
+        this.pendingError = `${err.message} (HTTP ${err.status})`;
+        this._banner(`✗ Goloka rejected the sale: ${err.message} — kept SAFE on this device.`);
+      } else {
+        this.pendingError = '';
+        this._banner('✗ Goloka unreachable — sale kept SAFE on this device. Will resubmit automatically.');
+      }
+    }
+  },
+
+  _reportArchive(status) {
+    if (status === 'pruned') {
+      this.archiveWarning = '⚠ Device archive is full — oldest submitted sales were removed to make space. Consider re-sending to Goloka soon.';
+    } else if (status === 'error') {
+      this.archiveWarning = '⚠ Could not keep a copy of the submitted sale on this device (storage full).';
+    }
+  },
+
+  // A lightweight status line reused by the sync flows (distinct from the sale
+  // receipt toast, which takes an amount).
+  _banner(msg) {
+    this.toastTitle   = '';   // plain notice — no "Thank you" receipt header
+    this.toastText    = msg;
+    this.toastVisible = true;
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { this.toastVisible = false; }, 4500);
   },
 
   // ── Report ─────────────────────────────────────────────────────
@@ -369,8 +437,8 @@ export const state = sprae(document.body, {
   // ── Transaction History ────────────────────────────────────────
 
   async openDatabase() {
-    if (!DB.isConfigured()) {
-      // Sync path: set data before opening so Sprae renders modal with correct content
+    if (!auth.active) {
+      // Not signed in — show the local reporting store only.
       this.dbStatus = '';
       this.dbDays   = this._buildDbDaysFromLocalStorage();
       this.dbOpen   = true;
@@ -451,32 +519,250 @@ export const state = sprae(document.body, {
     this.syncMsg    = '';
   },
 
+  // Manual fallback for the Daily Report "Record Sales" button. Sales now sync
+  // automatically per-sale; this just flushes anything still queued (e.g. saved
+  // while offline) and reports the queue state.
   async recordSales() {
-    if (!DB.isConfigured()) {
+    if (!auth.active) {
       this.syncStatus = 'error';
-      this.syncMsg    = 'Configure Boutique Write Key in Admin first.';
+      this.syncMsg    = 'Please sign in to record sales.';
       return;
     }
     this.syncStatus = 'syncing';
     this.syncMsg    = '';
+    if (Sync.getPending().length === 0) {
+      this.syncStatus = 'ok';
+      this.syncMsg    = '✓ Already up to date — every sale is in the database.';
+      return;
+    }
+    await this.retryPending();
+    this.syncStatus = this.pendingCount === 0 ? 'ok' : 'error';
+    this.syncMsg    = this.pendingCount === 0
+      ? '✓ All sales recorded to the database.'
+      : `✗ ${this.pendingCount} sale(s) still pending — ${this.pendingError || 'will retry automatically.'}`;
+  },
+
+  // ── Auth ───────────────────────────────────────────────────────
+  // Email first; the server answers with `password_required` or `otp_required`
+  // (or a token directly for trusted devices). Google is a one-tap alternative.
+
+  _showLogin() {
+    this.needLogin    = true;
+    this.isAdminMode  = false;
+    this.authStep     = 'email';
+    this.authPassword = '';
+    this.authOtp      = '';
+  },
+
+  async authSubmitEmail() {
+    if (this.authLoading || !this.authEmail.trim()) return;
+    this.authError   = '';
+    this.authLoading = true;
     try {
-      const cursor = localStorage.getItem(CONFIG.STORAGE_KEYS.SYNC_CURSOR) || '';
-      const newTxs = Sales._loadAll()
-        .filter(tx => tx.timestamp > cursor)
-        .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-      const result = await DB.appendNew(newTxs);
-      if (result.count === 0) {
-        this.syncStatus = 'ok';
-        this.syncMsg    = '✓ Already up to date — nothing new to record.';
+      const res = await DB.login(this.authEmail.trim(), '');
+      if (res.step === 'password_required')  this.authStep = 'password';
+      else if (res.step === 'otp_required')  this.authStep = 'otp';
+      else if (res.token) {
+        auth.save(res.token, res.user, res.refresh_token);
+        await this._postLogin();
+      }
+    } catch (err) {
+      this.authError = err.message || 'Sign in failed';
+    }
+    this.authLoading = false;
+  },
+
+  async authSubmitPassword() {
+    if (this.authLoading) return;
+    this.authError   = '';
+    this.authLoading = true;
+    try {
+      const res = await DB.login(this.authEmail.trim(), this.authPassword);
+      if (res.step === 'otp_required') this.authStep = 'otp';
+      else if (res.token) {
+        auth.save(res.token, res.user, res.refresh_token);
+        await this._postLogin();
+      }
+    } catch (err) {
+      this.authError = err.message || 'Sign in failed';
+    }
+    this.authLoading = false;
+  },
+
+  async authVerifyOtp() {
+    if (this.authLoading) return;
+    this.authError   = '';
+    this.authLoading = true;
+    try {
+      const res = await DB.verifyOtp(this.authEmail.trim(), this.authOtp.trim());
+      auth.save(res.token, res.user, res.refresh_token);
+      await this._postLogin();
+    } catch (err) {
+      this.authError = err.message || 'Verification failed';
+    }
+    this.authLoading = false;
+  },
+
+  async authGoogle() {
+    this.authError = '';
+    try {
+      const { url } = await DB.googleUrl();
+      window.location.href = url;
+    } catch (err) {
+      this.authError = 'Could not connect to server';
+    }
+  },
+
+  async logout() {
+    await DB.logout();     // best-effort refresh-token revocation
+    auth.clear();          // auth keys only — the queue/archive survive
+    this.userName = '';
+    this._showLogin();
+  },
+
+  // Everything that needs a logged-in cashier: permission gate, legacy-sales
+  // migration, catalog load, and the pending-queue flush.
+  async _postLogin() {
+    if (!auth.can('boutique:create')) {
+      auth.clear();
+      this._showLogin();
+      this.authError = 'This account has no boutique access — ask the temple admin for the Boutique Cashier role.';
+      return;
+    }
+    this.needLogin = false;
+    this.authError = '';
+    this.userName  = auth.displayName();
+
+    // One-time: convert any locally-recorded-but-unsynced sales into the queue.
+    const migrated = Sync.migrateLegacy();
+    if (migrated > 0) {
+      this._banner(`Found ${migrated} sale(s) from before sign-in — sending to Goloka…`);
+    }
+
+    await this.loadCatalog(false);
+
+    this.pendingCount = Sync.getPending().length;
+    this.archiveCount = Sync.getRecent().length;
+    if (this.pendingCount > 0) {
+      this.isOffline = true;
+      this.retryPending();
+    }
+  },
+
+  // ── Pending retry ──────────────────────────────────────────────
+
+  async retryPending() {
+    // Single flight: overlapping runs would re-POST the same items (harmless to
+    // Goloka thanks to the idempotency keys) but archive them twice locally.
+    if (_retrying) return;
+    _retrying = true;
+    try {
+      const pending = Sync.getPending();
+      if (pending.length === 0) { this.pendingCount = 0; this.pendingError = ''; return; }
+
+      let succeeded = 0, foreign = 0, lastErr = null;
+      for (const item of pending) {
+        // Goloka attributes every submission to the JWT holder, so a sale queued by
+        // a different cashier waits for its owner to sign in. Legacy items (no
+        // user_id) flush under the current user.
+        if (item.user_id && auth.userId && item.user_id !== auth.userId) { foreign++; continue; }
+        const key = item.idempotency_key || Sync.newKey();
+        try {
+          const result = await DB.postSale(item.payload, key);
+          this._reportArchive(Sync.saveRecent(result, item.payload, key));
+          Sync.removePending(item.id);
+          succeeded++;
+        } catch (err) {
+          console.warn('[Retry] Failed for id', item.id, err.message);
+          lastErr = err;
+          if (err.authExpired) break;
+        }
+      }
+
+      this.pendingCount = Sync.getPending().length;
+      this.archiveCount = Sync.getRecent().length;
+      if (this.pendingCount === 0) { this.isOffline = false; this.pendingError = ''; }
+      else if (lastErr) {
+        this.pendingError = lastErr.status ? `${lastErr.message} (HTTP ${lastErr.status})` : lastErr.message;
+      }
+
+      if (lastErr && lastErr.authExpired) {
+        this._banner('✗ Signed out — queued sale(s) kept on this device. Sign in to submit.');
+        this._showLogin();
         return;
       }
-      localStorage.setItem(CONFIG.STORAGE_KEYS.SYNC_CURSOR, result.cursor);
-      this.syncStatus = 'ok';
-      this.syncMsg    = `✓ ${result.count} transaction${result.count !== 1 ? 's' : ''} recorded to database.`;
-    } catch (err) {
-      this.syncStatus = 'error';
-      this.syncMsg    = `✗ Failed: ${err.message}`;
+      if (succeeded > 0 && this.pendingCount === 0) {
+        this._banner(`✓ ${succeeded} queued sale(s) now recorded in Goloka.`);
+      } else if (foreign > 0 && foreign === pending.length) {
+        this._banner(`${foreign} pending sale(s) belong to another account — that cashier must sign in to submit them.`);
+      }
+    } finally {
+      _retrying = false;
     }
+  },
+
+  // Wipe the pending queue — for a sale Goloka permanently rejects.
+  discardPending() {
+    Sync.getPending().forEach(p => Sync.removePending(p.id));
+    this.pendingCount = 0;
+    this.pendingError = '';
+    this.isOffline    = false;
+    this._banner('Pending sale(s) discarded.');
+  },
+
+  // ── Re-push (disaster recovery) ────────────────────────────────
+  // Re-send every sale this device knows about (queued + archived) with its
+  // original idempotency key. Goloka replays what it already has and recreates
+  // what it lost. Safe to run anytime.
+  async repushAll() {
+    if (this.repushing) return;
+    this.repushing    = true;
+    this.repushStatus = 'Re-sending all sales to Goloka…';
+
+    let already = 0, recovered = 0, failed = 0, skipped = 0;
+
+    for (const item of Sync.getPending()) {
+      if (item.user_id && auth.userId && item.user_id !== auth.userId) { skipped++; continue; }
+      const key = item.idempotency_key || Sync.newKey();
+      try {
+        const { replayed } = await DB.repostSale(item.payload, key);
+        this._reportArchive(Sync.saveRecent({}, item.payload, key));
+        Sync.removePending(item.id);
+        replayed ? already++ : recovered++;
+      } catch (err) {
+        console.warn('[Repush] pending failed:', err.message);
+        failed++;
+      }
+    }
+
+    for (const entry of Sync.getRecent().slice().reverse()) {
+      if (!entry.payload || !entry.idempotency_key) { skipped++; continue; }
+      try {
+        const { replayed } = await DB.repostSale(entry.payload, entry.idempotency_key);
+        replayed ? already++ : recovered++;
+      } catch (err) {
+        console.warn('[Repush] archived failed:', err.message);
+        failed++;
+      }
+    }
+
+    this.pendingCount = Sync.getPending().length;
+    if (this.pendingCount === 0 && failed === 0) { this.isOffline = false; this.pendingError = ''; }
+    this.archiveCount = Sync.getRecent().length;
+
+    const total = already + recovered + failed;
+    let msg;
+    if (total === 0 && skipped === 0) {
+      msg = 'Nothing to re-send — no sales stored on this device yet.';
+    } else if (failed === 0 && recovered === 0) {
+      msg = `✓ All ${already} sale(s) already in Goloka — nothing was lost.`;
+    } else {
+      msg = `✓ ${already} already registered · ${recovered} recovered · ${failed} failed.`;
+    }
+    if (skipped > 0) msg += ` (${skipped} sale(s) skipped: no stored copy, or queued by another account.)`;
+    this.repushStatus = msg;
+    this._banner(msg);
+    this.repushing = false;
   },
 
   printReport() {
@@ -629,6 +915,7 @@ ${'═'.repeat(55)}`;
   // ── Toast ──────────────────────────────────────────────────────
 
   _showToast(amount, method) {
+    this.toastTitle   = 'Thank you! Hare Krishna';
     this.toastText    = `${fmt(amount)} received · ${method || 'Cash'}`;
     this.toastVisible = true;
     clearTimeout(_toastTimer);
@@ -661,35 +948,16 @@ ${'═'.repeat(55)}`;
 
   _renderAdmin() {
     const saved         = loadStoredConfig();
-    this.sheetUrl       = saved.sheetUrl    || CONFIG.GOOGLE_SHEET_CSV_URL || '';
+    this.sheetUrl       = saved.sheetUrl || CONFIG.GOOGLE_SHEET_CSV_URL || '';
     this.connStatus     = '';
-    this.boutiqueKey    = saved.boutiqueKey || CONFIG.BOUTIQUE_WRITE_KEY   || '';
-    this.boutiqueStatus = '';
-    this.boutiqueClass  = 'conn-status';
+    this.pendingCount   = Sync.getPending().length;
+    this.archiveCount   = Sync.getRecent().length;
     this.pastReports    = Sales.getRecentDays(7).map(d => ({
       dateLabel: fmtDate(d.date),
       meta:      `${d.count} transactions · ${fmt(d.actualTotal)} received`,
       diff:      (d.difference > 0 ? '+' : '') + fmt(d.difference),
       diffClass: 'past-report-diff ' + (d.difference > 0 ? 'positive' : d.difference < 0 ? 'negative' : 'zero'),
     }));
-  },
-
-  saveBoutiqueKey() {
-    const saved           = loadStoredConfig();
-    saved.boutiqueKey     = this.boutiqueKey.trim();
-    localStorage.setItem(CONFIG.STORAGE_KEYS.CONFIG, JSON.stringify(saved));
-    CONFIG.BOUTIQUE_WRITE_KEY = saved.boutiqueKey;
-    this.boutiqueStatus   = 'Saved. Click "Test Connection" to verify.';
-    this.boutiqueClass    = 'conn-status success';
-  },
-
-  async testBoutiqueConnection() {
-    this.boutiqueStatus = 'Testing…';
-    this.boutiqueClass  = 'conn-status loading';
-    CONFIG.BOUTIQUE_WRITE_KEY = this.boutiqueKey.trim();
-    const { ok, message } = await DB.testConnection();
-    this.boutiqueStatus = message;
-    this.boutiqueClass  = 'conn-status ' + (ok ? 'success' : 'error');
   },
 
   async saveSheetUrl() {
@@ -722,22 +990,24 @@ ${'═'.repeat(55)}`;
   },
 
   clearAllData() {
-    if (!confirm('This will erase ALL sales history and the cached catalog. Are you sure?')) return;
+    if (!confirm('This will erase ALL sales history, the sync queue, and the cached catalog. Are you sure?')) return;
     if (!confirm('Last chance — delete everything?')) return;
     Sales.clearAll();
-    localStorage.removeItem(CONFIG.STORAGE_KEYS.SYNC_CURSOR);
+    localStorage.removeItem(CONFIG.STORAGE_KEYS.PENDING);
+    localStorage.removeItem(CONFIG.STORAGE_KEYS.RECENT);
+    this.pendingCount = 0;
+    this.archiveCount = 0;
     Catalog.items = SAMPLE_CATALOG.slice();
     this._renderAdmin();
     alert('All local data cleared.');
   },
 
   async clearBackendData() {
-    if (!DB.isConfigured()) { alert('Backend not configured.'); return; }
+    if (!auth.active) { alert('Please sign in first.'); return; }
     if (!confirm('This will permanently delete ALL sales from the backend database. Are you sure?')) return;
     if (!confirm('Last chance — wipe the entire backend database?')) return;
     try {
       await DB.clearAll();
-      localStorage.removeItem(CONFIG.STORAGE_KEYS.SYNC_CURSOR);
       alert('Backend database cleared.');
     } catch (err) {
       alert('Error: ' + err.message);
@@ -749,16 +1019,38 @@ ${'═'.repeat(55)}`;
   async init() {
     applyStoredConfig();
     document.addEventListener('keydown', e => {
-      if (e.key === 'F2' && !this.isAdminMode) {
+      if (e.key === 'F2' && !this.isAdminMode && !this.needLogin) {
         e.preventDefault();
         const input = document.getElementById('actual-donation');
-        input.focus();
-        input.select();
+        if (input) { input.focus(); input.select(); }
       }
     });
-    await this.loadCatalog(false);
+
+    // Returning from Google OAuth lands here with #token=… in the fragment;
+    // capture() stores it and scrubs the fragment. Never let a malformed
+    // fragment (or a storage failure) block the login screen from rendering.
+    try { auth.capture(); } catch (_) {}
+    if (!auth.active) { this._showLogin(); return; }
+    await this._postLogin();
   },
 });
 
 // Boot
 document.addEventListener('DOMContentLoaded', () => state.init());
+
+// ── Auto-sync ──────────────────────────────────────────────────────
+// Flush the pending queue whenever the device regains connectivity or the tab
+// returns to the foreground, so a queued sale doesn't sit until someone taps
+// "Retry". Each pending item carries an idempotency key, so a re-send can never
+// create a duplicate row in Goloka.
+let _autoSyncing = false;
+async function _autoSync() {
+  if (_autoSyncing || !navigator.onLine || !auth.active || state.pendingCount === 0) return;
+  _autoSyncing = true;
+  try { await state.retryPending(); }
+  finally { _autoSyncing = false; }
+}
+window.addEventListener('online', _autoSync);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') _autoSync();
+});

@@ -20,15 +20,33 @@ export const CONFIG = {
   STORAGE_KEYS: {
     CATALOG_CACHE:   'iskcon_catalog_cache',
     SANKIRTAN_CACHE: 'iskcon_sankirtan_cache',
-    SALES:           'iskcon_sales',
-    CONFIG:          'iskcon_config',
-    SYNC_CURSOR:     'iskcon_sync_cursor',
+    SALES:           'iskcon_sales',       // local reporting store (unchanged)
+    CONFIG:          'iskcon_config',       // sheetUrl only now
+    // Per-user auth (JWT), mirrors sankirtan-pos
+    TOKEN:           'iskcon_token',
+    USER:            'iskcon_user',
+    REFRESH:         'iskcon_refresh',
+    DEVICE:          'iskcon_device',
+    // Offline sync: pending queue + durable archive of submitted sales
+    PENDING:         'iskcon_pending',
+    RECENT:          'iskcon_recent',
+    SYNC_MIGRATED:   'iskcon_sync_migrated', // one-time legacy-sales migration flag
   },
 
-  // ── Goloka backend (set via Admin panel) ──────────────────────
-  GOLOKA_URL:        'http://localhost:8080',//'https://api.iskconmontreal.ca',
-  BOUTIQUE_WRITE_KEY: '',  // set once via Admin panel → stored in localStorage → auto-applied on reload
+  // ── Goloka backend ────────────────────────────────────────────
+  // Overridable at runtime: localStorage.setItem('iskcon_goloka_url', 'http://localhost:8080')
+  GOLOKA_URL: localStorage.getItem('iskcon_goloka_url') || 'https://api.iskconmontreal.ca',
 };
+
+// One-time cleanup of the pre-login era: the old shared boutique write key used
+// to live in iskcon_config. Strip it so it can never be sent again.
+try {
+  const cfg = JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEYS.CONFIG) || '{}');
+  if (cfg && cfg.boutiqueKey !== undefined) {
+    delete cfg.boutiqueKey;
+    localStorage.setItem(CONFIG.STORAGE_KEYS.CONFIG, JSON.stringify(cfg));
+  }
+} catch (_) {}
 
 // ──────────────────────────────────────────────────────────────────
 // Sample catalog — used when no Google Sheet URL is configured
